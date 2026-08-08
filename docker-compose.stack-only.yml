@@ -1,0 +1,6 @@
+services:
+  gcor-proxy:
+    ports: !reset []
+
+  mcp-postgres-gcor:
+    ports: !reset []

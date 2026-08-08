@@ -1,0 +1,47 @@
+# Adapt trigger names and payload fields to the buzz-workflow schema in your deployed Buzz version.
+# This template indexes channel discussions and uploaded files into GCOR in near real time.
+name: gcor-channel-realtime-ingest
+on:
+  message.created: {}
+  media.created: {}
+  file.uploaded: {}
+steps:
+  - name: index-message-text
+    when: ${event.type == "message.created" && event.content != ""}
+    http:
+      method: POST
+      url: http://gcor-proxy:5001/api/ingest
+      headers:
+        X-Gcor-Webhook-Secret: ${GCOR_STACK_API_SECRET}
+      form:
+        text: ${event.content}
+        title: ${event.channel_name}
+        channel_name: ${event.channel_name}
+        channel_id: ${event.channel_id}
+        event_id: ${event.id}
+        event_kind: ${event.kind}
+        event_timestamp: ${event.created_at}
+        author_pubkey: ${event.pubkey}
+        attachments_json: ${event.attachments}
+        source_uri: buzz://${event.id}
+        access_level: public
+
+  - name: index-uploaded-file
+    when: ${event.file_url != ""}
+    http:
+      method: POST
+      url: http://gcor-proxy:5001/api/ingest
+      headers:
+        X-Gcor-Webhook-Secret: ${GCOR_STACK_API_SECRET}
+      form:
+        file_url: ${event.file_url}
+        file_name: ${event.file_name}
+        title: ${event.file_name}
+        channel_name: ${event.channel_name}
+        channel_id: ${event.channel_id}
+        event_id: ${event.id}
+        event_kind: ${event.kind}
+        event_timestamp: ${event.created_at}
+        author_pubkey: ${event.pubkey}
+        source_uri: buzz://${event.id}
+        access_level: public

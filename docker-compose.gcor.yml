@@ -1,0 +1,3 @@
+# Compatibility entry point. The complete Buzz and GCOR stack is in docker-compose.yml.
+include:
+  - path: docker-compose.yml

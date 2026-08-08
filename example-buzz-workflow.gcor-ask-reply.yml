@@ -1,0 +1,34 @@
+# Adapt trigger names, expression syntax, and step-output references to the workflow engine in your Buzz deployment.
+# Goal: users type /ask in channel, GCOR returns a reply envelope, workflow posts it back to the same channel.
+name: gcor-ask-reply-in-channel
+on:
+  message.created: {}
+steps:
+  - name: ask-reply
+    when: ${event.type == "message.created" && event.content ~= "^/ask\\s+"}
+    http:
+      method: POST
+      url: http://gcor-proxy:5001/api/ask/reply
+      headers:
+        Content-Type: application/json
+        X-Gcor-Webhook-Secret: ${GCOR_STACK_API_SECRET}
+      body_json:
+        # Optionally strip '/ask ' in your runner if helper functions are available.
+        query: ${event.content}
+        top_k: 6
+        hops: 1
+        access_level: public
+        approved_only: true
+        max_citations: 4
+        channel_id: ${event.channel_id}
+        channel_name: ${event.channel_name}
+        source_event_id: ${event.id}
+
+  # Pseudo action shape. Replace with your runner's send-message action syntax.
+  - name: post-answer
+    when: ${steps.ask-reply.response.reply.text != ""}
+    action: send_message
+    with:
+      channel_id: ${event.channel_id}
+      text: ${steps.ask-reply.response.reply.text}
+      # reply_to_event_id: ${event.id}

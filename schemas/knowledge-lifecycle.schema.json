@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gbuzz.local/schemas/knowledge-lifecycle.schema.json",
+  "title": "Knowledge Lifecycle Metadata",
+  "type": "object",
+  "properties": {
+    "record_type": {
+      "type": "string",
+      "enum": ["curated_knowledge", "knowledge_correction"]
+    },
+    "knowledge_state": {
+      "type": "string",
+      "enum": ["proposed", "approved", "superseded", "archived", "rejected"]
+    },
+    "knowledge_transition": {
+      "type": "string",
+      "enum": ["promote", "correct", "approve", "supersede", "archive", "reject"]
+    },
+    "knowledge_approved_by": {
+      "type": "string"
+    },
+    "knowledge_approved_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "knowledge_approval_note": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

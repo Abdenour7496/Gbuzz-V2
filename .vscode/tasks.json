@@ -1,0 +1,33 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "GCOR: Knowledge Smoke Test",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/gcor-knowledge-smoke.ps1",
+        "-Json"
+      ],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "GCOR: Knowledge Regression Gate",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/gcor-knowledge-gate.ps1",
+        "-Json"
+      ],
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,111 @@
+# Adapt trigger names and payload fields to the buzz-workflow schema in your deployed Buzz version.
+# This template demonstrates chat-native knowledge actions in a Buzz channel:
+# - /ask <question>
+# - /promote <curated summary>
+# - /correct <target_source_uri> | <correction text>
+name: gcor-chat-knowledge-loop
+on:
+  message.created: {}
+steps:
+  - name: ask-knowledge
+    when: ${event.type == "message.created" && event.content ~= "^/ask\\s+"}
+    http:
+      method: POST
+      url: http://gcor-proxy:5001/api/ask
+      headers:
+        Content-Type: application/json
+        X-Gcor-Webhook-Secret: ${GCOR_STACK_API_SECRET}
+      body_json:
+        query: ${event.content}
+        top_k: 6
+        hops: 1
+        access_level: public
+        channel_id: ${event.channel_id}
+        channel_name: ${event.channel_name}
+        approved_only: true
+
+  - name: promote-knowledge
+    when: ${event.type == "message.created" && event.content ~= "^/promote\\s+"}
+    http:
+      method: POST
+      url: http://gcor-proxy:5001/api/knowledge/promote
+      headers:
+        Content-Type: application/json
+        X-Gcor-Webhook-Secret: ${GCOR_STACK_API_SECRET}
+      body_json:
+        title: ${event.channel_name}
+        content: ${event.content}
+        source_uri: buzz://${event.id}
+        channel_name: ${event.channel_name}
+        channel_id: ${event.channel_id}
+        event_id: ${event.id}
+        event_kind: ${event.kind}
+        event_timestamp: ${event.created_at}
+        author_pubkey: ${event.pubkey}
+        access_level: public
+
+  - name: correct-knowledge
+    # Expected chat format: /correct <target_source_uri> | <correction text>
+    when: ${event.type == "message.created" && event.content ~= "^/correct\\s+"}
+    http:
+      method: POST
+      url: http://gcor-proxy:5001/api/knowledge/correct
+      headers:
+        Content-Type: application/json
+        X-Gcor-Webhook-Secret: ${GCOR_STACK_API_SECRET}
+      body_json:
+        target_source_uri: ${event.target_source_uri}
+        correction_text: ${event.correction_text}
+        source_uri: buzz://${event.id}
+        channel_name: ${event.channel_name}
+        channel_id: ${event.channel_id}
+        event_id: ${event.id}
+        event_kind: ${event.kind}
+        event_timestamp: ${event.created_at}
+        author_pubkey: ${event.pubkey}
+        access_level: public
+
+  # Expected chat format: /approve <target_source_uri>
+  - name: approve-knowledge
+    when: ${event.type == "message.created" && event.content ~= "^/approve\\s+"}
+    http:
+      method: POST
+      url: http://gcor-proxy:5001/api/knowledge/approve
+      headers:
+        Content-Type: application/json
+        X-Gcor-Webhook-Secret: ${GCOR_STACK_API_SECRET}
+      body_json:
+        target_source_uri: ${event.target_source_uri}
+        approved_by: ${event.pubkey}
+        note: ${event.content}
+
+  # Expected chat format: /supersede <target_source_uri> | <replacement_source_uri>
+  - name: supersede-knowledge
+    when: ${event.type == "message.created" && event.content ~= "^/supersede\\s+"}
+    http:
+      method: POST
+      url: http://gcor-proxy:5001/api/knowledge/transition
+      headers:
+        Content-Type: application/json
+        X-Gcor-Webhook-Secret: ${GCOR_STACK_API_SECRET}
+      body_json:
+        transition: superseded
+        target_source_uri: ${event.target_source_uri}
+        superseded_by_source_uri: ${event.replacement_source_uri}
+        changed_by: ${event.pubkey}
+        note: ${event.content}
+
+  # Expected chat format: /archive <target_source_uri>
+  - name: archive-knowledge
+    when: ${event.type == "message.created" && event.content ~= "^/archive\\s+"}
+    http:
+      method: POST
+      url: http://gcor-proxy:5001/api/knowledge/transition
+      headers:
+        Content-Type: application/json
+        X-Gcor-Webhook-Secret: ${GCOR_STACK_API_SECRET}
+      body_json:
+        transition: archived
+        target_source_uri: ${event.target_source_uri}
+        changed_by: ${event.pubkey}
+        note: ${event.content}

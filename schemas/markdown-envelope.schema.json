@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gbuzz.local/schemas/markdown-envelope.schema.json",
+  "title": "Markdown Envelope",
+  "type": "object",
+  "required": ["front_matter", "body_markdown"],
+  "properties": {
+    "front_matter": {
+      "type": "object",
+      "required": ["title", "access_level", "generated_at"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_uri": {
+          "type": ["string", "null"]
+        },
+        "access_level": {
+          "type": "string",
+          "minLength": 1
+        },
+        "channel_name": {
+          "type": ["string", "null"]
+        },
+        "channel_id": {
+          "type": ["string", "null"]
+        },
+        "event_id": {
+          "type": ["string", "null"]
+        },
+        "event_kind": {
+          "type": ["string", "null"]
+        },
+        "event_timestamp": {
+          "type": ["string", "null"]
+        },
+        "author_pubkey": {
+          "type": ["string", "null"]
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": true
+    },
+    "body_markdown": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,221 @@
+services:
+  relay:
+    image: ${BUZZ_IMAGE:-ghcr.io/block/buzz:main}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BUZZ_BIND_ADDR: 0.0.0.0:3000
+      BUZZ_HEALTH_PORT: "8080"
+      BUZZ_METRICS_PORT: "9102"
+      DATABASE_URL: postgres://${POSTGRES_USER:-buzz}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-buzz}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
+      BUZZ_S3_ENDPOINT: http://minio:9000
+      BUZZ_S3_ADDRESSING_STYLE: path
+      BUZZ_S3_ACCESS_KEY: ${BUZZ_S3_ACCESS_KEY:?set BUZZ_S3_ACCESS_KEY}
+      BUZZ_S3_SECRET_KEY: ${BUZZ_S3_SECRET_KEY:?set BUZZ_S3_SECRET_KEY}
+      BUZZ_S3_BUCKET: ${BUZZ_S3_BUCKET:-buzz-media}
+      BUZZ_GIT_REPO_PATH: /data/git
+      BUZZ_AUTO_MIGRATE: ${BUZZ_AUTO_MIGRATE:-true}
+      BUZZ_GIT_CONFORMANCE_PROBE: ${BUZZ_GIT_CONFORMANCE_PROBE:-true}
+    ports:
+      - "${BUZZ_HTTP_PORT:-3000}:3000"
+    volumes:
+      - buzz-git-data:/data/git
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8080; printf \"GET /_readiness HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n\" >&3; grep -q \"200 OK\" <&3'"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+    networks: [buzz-net]
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-buzz}
+      POSTGRES_USER: ${POSTGRES_USER:-buzz}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - buzz-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks: [buzz-net]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    volumes:
+      - buzz-redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    networks: [buzz-net]
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${BUZZ_S3_ACCESS_KEY:?set BUZZ_S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${BUZZ_S3_SECRET_KEY:?set BUZZ_S3_SECRET_KEY}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - buzz-minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks: [buzz-net]
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      BUZZ_S3_ACCESS_KEY: ${BUZZ_S3_ACCESS_KEY:?set BUZZ_S3_ACCESS_KEY}
+      BUZZ_S3_SECRET_KEY: ${BUZZ_S3_SECRET_KEY:?set BUZZ_S3_SECRET_KEY}
+      BUZZ_S3_BUCKET: ${BUZZ_S3_BUCKET:-buzz-media}
+    entrypoint: >
+      /bin/sh -euc '
+        mc alias set local http://minio:9000 "$${BUZZ_S3_ACCESS_KEY}" "$${BUZZ_S3_SECRET_KEY}"
+        mc mb --ignore-existing "local/$${BUZZ_S3_BUCKET}"
+        mc anonymous set none "local/$${BUZZ_S3_BUCKET}"
+      '
+    networks: [buzz-net]
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks: [buzz-net]
+
+  ollama-init:
+    image: ollama/ollama:latest
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    environment:
+      OLLAMA_HOST: ollama:11434
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+    command: ["ollama pull \"$${EMBEDDING_MODEL}\""]
+    volumes:
+      - ollama-data:/root/.ollama
+    networks: [buzz-net]
+
+  gcor-migrate:
+    image: pgvector/pgvector:pg17
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-buzz}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-buzz}
+      EMBEDDING_DIMS: ${EMBEDDING_DIMS:-1536}
+    volumes:
+      - ./migrations:/migrations:ro
+    command: ["/bin/sh", "-ec", "for migration in /migrations/*.sql; do sed \"s/__EMBEDDING_DIMS__/$${EMBEDDING_DIMS}/g\" \"$${migration}\" | psql -v ON_ERROR_STOP=1; done"]
+    networks: [buzz-net]
+
+  gcor-proxy:
+    build:
+      context: .
+      dockerfile: proxy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      gcor-migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      ollama-init:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-buzz}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-buzz}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${BUZZ_S3_ACCESS_KEY:?set BUZZ_S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${BUZZ_S3_SECRET_KEY:?set BUZZ_S3_SECRET_KEY}
+      MINIO_BUCKET: ${GCOR_S3_BUCKET:-buzz-gcor}
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-openai}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      INGEST_WEBHOOK_SECRET: ${INGEST_WEBHOOK_SECRET:?set INGEST_WEBHOOK_SECRET}
+      STACK_API_SECRET: ${STACK_API_SECRET:-}
+      ENFORCE_STACK_API_SECRET: ${ENFORCE_STACK_API_SECRET:-true}
+      MAX_ATTACHMENTS_PER_REQUEST: ${MAX_ATTACHMENTS_PER_REQUEST:-100}
+      REMOTE_FETCH_ALLOWED_HOSTS: ${REMOTE_FETCH_ALLOWED_HOSTS:-}
+      REMOTE_FETCH_BLOCK_PRIVATE_HOSTS: ${REMOTE_FETCH_BLOCK_PRIVATE_HOSTS:-false}
+    ports:
+      - "${GCOR_PROXY_BIND_ADDR:-127.0.0.1}:${GCOR_PROXY_PORT:-5001}:5001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    networks: [buzz-net]
+
+  mcp-postgres-gcor:
+    build: ./mcp-postgres-gcor
+    restart: unless-stopped
+    depends_on:
+      gcor-proxy:
+        condition: service_healthy
+    environment:
+      GCOR_PROXY_URL: http://gcor-proxy:5001
+      INGEST_WEBHOOK_SECRET: ${INGEST_WEBHOOK_SECRET:?set INGEST_WEBHOOK_SECRET}
+      STACK_API_SECRET: ${STACK_API_SECRET:-}
+    ports:
+      - "${GCOR_MCP_BIND_ADDR:-127.0.0.1}:${GCOR_MCP_PORT:-8765}:8765"
+    networks: [buzz-net]
+
+volumes:
+  buzz-postgres-data:
+  buzz-redis-data:
+  buzz-minio-data:
+  buzz-git-data:
+  ollama-data:
+
+networks:
+  buzz-net:
+    driver: bridge
