@@ -1,0 +1,58 @@
+x-app-hardening: &app-hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=128m,mode=1777
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  relay:
+    <<: *app-hardening
+    environment:
+      BUZZ_AUTO_MIGRATE: "false"
+    mem_limit: ${RELAY_MEMORY_LIMIT:-1g}
+    cpus: ${RELAY_CPU_LIMIT:-1.0}
+
+  gcor-proxy:
+    <<: *app-hardening
+    environment:
+      STACK_API_SECRET: ${STACK_API_SECRET:?set STACK_API_SECRET}
+      ENFORCE_STACK_API_SECRET: "true"
+      REMOTE_FETCH_BLOCK_PRIVATE_HOSTS: "true"
+    mem_limit: ${GCOR_PROXY_MEMORY_LIMIT:-1g}
+    cpus: ${GCOR_PROXY_CPU_LIMIT:-1.0}
+
+  mcp-postgres-gcor:
+    <<: *app-hardening
+    mem_limit: ${GCOR_MCP_MEMORY_LIMIT:-512m}
+    cpus: ${GCOR_MCP_CPU_LIMIT:-0.5}
+
+  graphiti-mcp:
+    environment:
+      GRAPHITI_LLM_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY}
+      GRAPHITI_LLM_API_URL: https://api.openai.com/v1
+      GRAPHITI_LLM_MODEL: ${GRAPHITI_PRODUCTION_LLM_MODEL:-gpt-4.1-mini}
+      GRAPHITI_EMBEDDING_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY}
+      GRAPHITI_EMBEDDING_API_URL: https://api.openai.com/v1
+      GRAPHITI_EMBEDDING_MODEL: ${GRAPHITI_PRODUCTION_EMBEDDING_MODEL:-text-embedding-3-small}
+      GRAPHITI_EMBEDDING_DIMS: ${GRAPHITI_PRODUCTION_EMBEDDING_DIMS:-1536}
+
+  graphiti-projector:
+    <<: *app-hardening
+    mem_limit: ${GRAPHITI_PROJECTOR_MEMORY_LIMIT:-512m}
+    cpus: ${GRAPHITI_PROJECTOR_CPU_LIMIT:-0.5}
+    environment:
+      GRAPHITI_PROJECTOR_SUBMISSION_TIMEOUT_MINUTES: ${GRAPHITI_PROJECTOR_SUBMISSION_TIMEOUT_MINUTES:-15}
+
+  gcor-event-projector:
+    <<: *app-hardening
+    mem_limit: ${EVENT_PROJECTOR_MEMORY_LIMIT:-512m}
+    cpus: ${EVENT_PROJECTOR_CPU_LIMIT:-0.5}

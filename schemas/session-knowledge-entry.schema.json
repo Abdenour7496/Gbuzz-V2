@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gbuzz.local/schemas/session-knowledge-entry.schema.json",
+  "title": "Gbuzz Session Knowledge Entry",
+  "type": "object",
+  "required": ["schema", "schema_version", "session", "participant", "entry", "provenance"],
+  "properties": {
+    "schema": {"const": "https://gbuzz.local/schemas/session-knowledge-entry.schema.json"},
+    "schema_version": {"const": "1.0.0"},
+    "session": {
+      "type": "object",
+      "required": ["id", "external_id"],
+      "properties": {
+        "id": {"type": "string", "format": "uuid"},
+        "external_id": {"type": "string", "minLength": 1},
+        "channel_id": {"type": ["string", "null"]},
+        "channel_name": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "participant": {
+      "type": "object",
+      "required": ["id", "type", "external_id", "name"],
+      "properties": {
+        "id": {"type": "string", "format": "uuid"},
+        "type": {"enum": ["user", "agent", "document", "system"]},
+        "external_id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "entry": {
+      "type": "object",
+      "required": ["id", "external_id", "type", "occurred_at", "content"],
+      "properties": {
+        "id": {"type": "string", "format": "uuid"},
+        "external_id": {"type": "string", "minLength": 1},
+        "type": {"enum": ["message", "document", "system"]},
+        "occurred_at": {"type": "string", "format": "date-time"},
+        "content": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["postgres_record_id"],
+      "properties": {
+        "postgres_document_id": {"type": ["string", "null"], "format": "uuid"},
+        "postgres_record_id": {"type": "string", "format": "uuid"},
+        "bucket": {"type": ["string", "null"]},
+        "original_key": {"type": ["string", "null"]},
+        "markdown_key": {"type": ["string", "null"]},
+        "record_key": {"type": ["string", "null"]},
+        "source_uri": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

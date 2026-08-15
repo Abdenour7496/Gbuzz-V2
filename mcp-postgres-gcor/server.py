@@ -21,6 +21,14 @@ async def proxy_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
         return response.json()
 
 
+async def proxy_get(path: str, params: dict[str, Any] | None = None) -> Any:
+    headers = {"X-Gcor-Webhook-Secret": STACK_API_SECRET} if STACK_API_SECRET else {}
+    async with httpx.AsyncClient(timeout=90) as client:
+        response = await client.get(f"{PROXY_URL}{path}", params=params, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+
 @mcp.tool()
 async def semantic_search(
     query: str,
@@ -178,6 +186,21 @@ async def ingest_document(
         response = await client.post(f"{PROXY_URL}/api/ingest", data=form, headers=headers)
         response.raise_for_status()
         return response.json()
+
+
+@mcp.tool()
+async def list_knowledge_sessions(
+    channel_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """List authoritative PostgreSQL chat-session knowledge containers and Graphiti delivery counts."""
+    return await proxy_get("/api/sessions", {"channel_id": channel_id, "limit": limit})
+
+
+@mcp.tool()
+async def get_knowledge_session(session_id: str) -> dict[str, Any]:
+    """Get one authoritative session with its user, agent, and document participants and entries."""
+    return await proxy_get(f"/api/sessions/{session_id}")
 
 
 @mcp.tool()

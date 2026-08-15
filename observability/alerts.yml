@@ -1,0 +1,31 @@
+groups:
+  - name: gbuzz
+    rules:
+      - alert: GbuzzTargetDown
+        expr: up{job=~"gcor|buzz-relay|postgres|redis"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gbuzz target {{ $labels.job }} is unavailable"
+      - alert: GcorAttachmentReplayErrors
+        expr: increase(gcor_attachment_replay_failures_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Attachment replay failures detected
+      - alert: PostgresConnectionsNearLimit
+        expr: sum(pg_stat_activity_count) / min(pg_settings_max_connections) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: PostgreSQL is using more than 80% of available connections
+      - alert: RedisMemoryNearLimit
+        expr: redis_memory_max_bytes > 0 and redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Redis is using more than 85% of its memory limit

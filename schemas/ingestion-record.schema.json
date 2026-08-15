@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gbuzz.local/schemas/ingestion-record.schema.json",
+  "title": "Immutable Ingestion Record",
+  "type": "object",
+  "required": ["schema_version", "record_id", "status", "source", "scope", "event", "objects", "ingested_at"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "record_id": {"type": "string", "format": "uuid"},
+    "document_id": {"type": ["string", "null"], "format": "uuid"},
+    "status": {"enum": ["archived", "indexed", "failed", "quarantined", "backfilled"]},
+    "source": {
+      "type": "object",
+      "required": ["media_type", "content_bytes", "sha256"],
+      "properties": {
+        "media_type": {"type": "string"},
+        "content_bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      },
+      "additionalProperties": true
+    },
+    "scope": {"type": "object"},
+    "event": {"type": "object"},
+    "objects": {
+      "type": "object",
+      "required": ["bucket", "original_key", "markdown_key", "record_key", "markdown_sha256"],
+      "properties": {
+        "bucket": {"type": "string"},
+        "original_key": {"type": "string"},
+        "markdown_key": {"type": "string"},
+        "record_key": {"type": "string"},
+        "markdown_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      },
+      "additionalProperties": true
+    },
+    "ingested_at": {"type": "string", "format": "date-time"},
+    "metadata": {"type": "object"}
+  },
+  "additionalProperties": true
+}

@@ -18,7 +18,7 @@ services:
       BUZZ_AUTO_MIGRATE: ${BUZZ_AUTO_MIGRATE:-true}
       BUZZ_GIT_CONFORMANCE_PROBE: ${BUZZ_GIT_CONFORMANCE_PROBE:-true}
     ports:
-      - "${BUZZ_HTTP_PORT:-3000}:3000"
+      - "${BUZZ_HTTP_BIND_ADDR:-0.0.0.0}:${BUZZ_HTTP_PORT:-3000}:3000"
     volumes:
       - buzz-git-data:/data/git
     depends_on:
@@ -78,8 +78,8 @@ services:
       MINIO_ROOT_USER: ${BUZZ_S3_ACCESS_KEY:?set BUZZ_S3_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${BUZZ_S3_SECRET_KEY:?set BUZZ_S3_SECRET_KEY}
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "${MINIO_BIND_ADDR:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_BIND_ADDR:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - buzz-minio-data:/data
     healthcheck:
@@ -105,6 +105,7 @@ services:
         mc alias set local http://minio:9000 "$${BUZZ_S3_ACCESS_KEY}" "$${BUZZ_S3_SECRET_KEY}"
         mc mb --ignore-existing "local/$${BUZZ_S3_BUCKET}"
         mc anonymous set none "local/$${BUZZ_S3_BUCKET}"
+        mc version enable "local/$${BUZZ_S3_BUCKET}"
       '
     networks: [buzz-net]
 
@@ -131,7 +132,9 @@ services:
     environment:
       OLLAMA_HOST: ollama:11434
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
-    command: ["ollama pull \"$${EMBEDDING_MODEL}\""]
+      GENERATION_MODEL: ${GENERATION_MODEL:-qwen2.5:1.5b}
+      GRAPHITI_MODEL: ${GRAPHITI_MODEL:-qwen2.5:7b}
+    command: ["ollama pull \"$${EMBEDDING_MODEL}\" && ollama pull \"$${GENERATION_MODEL}\" && ollama pull \"$${GRAPHITI_MODEL}\""]
     volumes:
       - ollama-data:/root/.ollama
     networks: [buzz-net]
@@ -178,6 +181,7 @@ services:
       MINIO_BUCKET: ${GCOR_S3_BUCKET:-buzz-gcor}
       EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-openai}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      GENERATION_MODEL: ${GENERATION_MODEL:-qwen2.5:1.5b}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
       INGEST_WEBHOOK_SECRET: ${INGEST_WEBHOOK_SECRET:?set INGEST_WEBHOOK_SECRET}
@@ -209,12 +213,114 @@ services:
       - "${GCOR_MCP_BIND_ADDR:-127.0.0.1}:${GCOR_MCP_PORT:-8765}:8765"
     networks: [buzz-net]
 
+  falkordb:
+    image: falkordb/falkordb:v4.20.1
+    restart: unless-stopped
+    environment:
+      REDIS_ARGS: --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD} --appendonly yes --appendfsync everysec
+      FALKORDB_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+      BROWSER: "0"
+    volumes:
+      - buzz-falkordb-data:/var/lib/falkordb/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${FALKORDB_PASSWORD}\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks: [buzz-net]
+
+  graphiti-mcp:
+    image: gbuzz-graphiti-mcp:0.29.3
+    build:
+      context: graphiti-mcp
+      dockerfile: Dockerfile
+      args:
+        GRAPHITI_VERSION: v0.29.3
+        GRAPHITI_CORE_VERSION: 0.29.3
+    command: ["uv", "run", "--no-sync", "main.py", "--config", "/app/mcp/config/gbuzz.yaml"]
+    restart: unless-stopped
+    depends_on:
+      falkordb:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    environment:
+      CONFIG_PATH: /app/mcp/config/gbuzz.yaml
+      FALKORDB_URI: redis://falkordb:6379
+      FALKORDB_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+      FALKORDB_DATABASE: ${FALKORDB_DATABASE:-gbuzz}
+      GRAPHITI_LLM_API_KEY: ${GRAPHITI_LLM_API_KEY:-ollama}
+      GRAPHITI_LLM_API_URL: ${GRAPHITI_LLM_API_URL:-http://ollama:11434/v1}
+      GRAPHITI_LLM_MODEL: ${GRAPHITI_MODEL:-qwen2.5:7b}
+      GRAPHITI_EMBEDDING_API_KEY: ${GRAPHITI_EMBEDDING_API_KEY:-ollama}
+      GRAPHITI_EMBEDDING_API_URL: ${GRAPHITI_EMBEDDING_API_URL:-http://ollama:11434/v1}
+      GRAPHITI_EMBEDDING_MODEL: ${GRAPHITI_EMBEDDING_MODEL:-nomic-embed-text}
+      GRAPHITI_EMBEDDING_DIMS: ${GRAPHITI_EMBEDDING_DIMS:-768}
+      SEMAPHORE_LIMIT: ${GRAPHITI_SEMAPHORE_LIMIT:-1}
+      GRAPHITI_TELEMETRY_ENABLED: "false"
+    volumes:
+      - ./graphiti-mcp/config.yaml:/app/mcp/config/gbuzz.yaml:ro
+    ports:
+      - "${GRAPHITI_MCP_BIND_ADDR:-127.0.0.1}:${GRAPHITI_MCP_PORT:-8000}:8000"
+    networks: [buzz-net]
+
+  graphiti-projector:
+    build:
+      context: .
+      dockerfile: graphiti-projector/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      graphiti-mcp:
+        condition: service_healthy
+      gcor-proxy:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-buzz}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-buzz}
+      GRAPHITI_MCP_URL: http://graphiti-mcp:8000/mcp
+      GRAPHITI_MCP_HOST_HEADER: localhost:8000
+      GRAPHITI_PROJECTOR_POLL_SECONDS: ${GRAPHITI_PROJECTOR_POLL_SECONDS:-2}
+      GRAPHITI_PROJECTOR_MAX_ATTEMPTS: ${GRAPHITI_PROJECTOR_MAX_ATTEMPTS:-8}
+      GRAPHITI_PROJECTOR_PROCESSING_TIMEOUT_MINUTES: ${GRAPHITI_PROJECTOR_PROCESSING_TIMEOUT_MINUTES:-15}
+      GRAPHITI_PROJECTOR_SUBMISSION_TIMEOUT_MINUTES: ${GRAPHITI_PROJECTOR_SUBMISSION_TIMEOUT_MINUTES:-45}
+    networks: [buzz-net]
+
+  gcor-event-projector:
+    build:
+      context: .
+      dockerfile: projector/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      relay:
+        condition: service_healthy
+      gcor-proxy:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-buzz}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-buzz}
+      GCOR_PROXY_URL: http://gcor-proxy:5001
+      BUZZ_RELAY_HTTP_URL: http://relay:3000
+      STACK_API_SECRET: ${STACK_API_SECRET:-}
+      INGEST_WEBHOOK_SECRET: ${INGEST_WEBHOOK_SECRET:?set INGEST_WEBHOOK_SECRET}
+      PROJECTOR_POLL_SECONDS: ${PROJECTOR_POLL_SECONDS:-2}
+      PROJECTOR_BATCH_SIZE: ${PROJECTOR_BATCH_SIZE:-50}
+      PROJECTOR_EVENT_KINDS: ${PROJECTOR_EVENT_KINDS:-9,40002,45001,45003}
+    networks: [buzz-net]
+
 volumes:
   buzz-postgres-data:
   buzz-redis-data:
   buzz-minio-data:
   buzz-git-data:
   ollama-data:
+  buzz-falkordb-data:
 
 networks:
   buzz-net:

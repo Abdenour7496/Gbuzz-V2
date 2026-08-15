@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 import boto3
@@ -38,6 +38,7 @@ MINIO_SECRET_KEY = os.environ["MINIO_ROOT_PASSWORD"]
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "buzz-gcor")
 EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "openai")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+GENERATION_MODEL = os.getenv("GENERATION_MODEL", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
 INGEST_WEBHOOK_SECRET = os.getenv("INGEST_WEBHOOK_SECRET", "")
@@ -45,7 +46,6 @@ STACK_API_SECRET = os.getenv("STACK_API_SECRET", "") or INGEST_WEBHOOK_SECRET
 ENFORCE_STACK_API_SECRET = os.getenv("ENFORCE_STACK_API_SECRET", "true").strip().lower() in {"1", "true", "yes", "on"}
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1200"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "180"))
-CONCEPT_LIMIT_PER_CHUNK = int(os.getenv("CONCEPT_LIMIT_PER_CHUNK", "8"))
 MAX_INGEST_FILE_BYTES = int(os.getenv("MAX_INGEST_FILE_BYTES", str(25 * 1024 * 1024)))
 ATTACHMENT_FETCH_TIMEOUT_SECONDS = float(os.getenv("ATTACHMENT_FETCH_TIMEOUT_SECONDS", "20"))
 ATTACHMENT_FETCH_MAX_RETRIES = int(os.getenv("ATTACHMENT_FETCH_MAX_RETRIES", "2"))
@@ -56,13 +56,11 @@ REMOTE_FETCH_ALLOWED_HOSTS = [host.strip().casefold() for host in os.getenv("REM
 REMOTE_FETCH_BLOCK_PRIVATE_HOSTS = os.getenv("REMOTE_FETCH_BLOCK_PRIVATE_HOSTS", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 ROOT_DIR = Path(__file__).resolve().parent
-SCHEMAS_DIR = ROOT_DIR / "schemas"
+SCHEMAS_DIR = Path(os.getenv("SCHEMAS_DIR", str(ROOT_DIR / "schemas")))
 CHAT_SESSION_SCHEMA_PATH = SCHEMAS_DIR / "chat-session.schema.json"
 MARKDOWN_ENVELOPE_SCHEMA_PATH = SCHEMAS_DIR / "markdown-envelope.schema.json"
+INGESTION_RECORD_SCHEMA_PATH = SCHEMAS_DIR / "ingestion-record.schema.json"
 
-QUOTED_CONCEPT_PATTERN = re.compile(r'["“]([^"”]{2,80})["”]')
-PROPER_NOUN_PHRASE_PATTERN = re.compile(r"\b[A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*)+\b")
-IGNORED_CONCEPTS = {"A", "An", "And", "But", "For", "From", "In", "It", "Of", "On", "The", "This", "That", "To", "We", "With"}
 
 REQUESTS = Counter("gcor_rag_requests_total", "GCOR retrieval requests")
 REQUEST_DURATION = Histogram("gcor_rag_duration_seconds", "GCOR retrieval duration")
@@ -87,8 +85,10 @@ def load_schema(path: Path, schema_name: str) -> dict[str, Any]:
 
 CHAT_SESSION_SCHEMA = load_schema(CHAT_SESSION_SCHEMA_PATH, "chat-session")
 MARKDOWN_ENVELOPE_SCHEMA = load_schema(MARKDOWN_ENVELOPE_SCHEMA_PATH, "markdown-envelope")
+INGESTION_RECORD_SCHEMA = load_schema(INGESTION_RECORD_SCHEMA_PATH, "ingestion-record")
 CHAT_SESSION_VALIDATOR = Draft202012Validator(CHAT_SESSION_SCHEMA, format_checker=FormatChecker())
 MARKDOWN_ENVELOPE_VALIDATOR = Draft202012Validator(MARKDOWN_ENVELOPE_SCHEMA, format_checker=FormatChecker())
+INGESTION_RECORD_VALIDATOR = Draft202012Validator(INGESTION_RECORD_SCHEMA, format_checker=FormatChecker())
 
 
 def raise_schema_error(field_name: str, error: ValidationError) -> None:
@@ -186,6 +186,12 @@ class TransitionKnowledgeRequest(BaseModel):
     superseded_by_source_uri: str | None = None
 
 
+class RecoveryOperationRequest(BaseModel):
+    dry_run: bool = True
+    limit: int = Field(default=1000, ge=1, le=10000)
+    bucket: str | None = None
+
+
 def vector_literal(values: list[float]) -> str:
     return "[" + ",".join(str(value) for value in values) + "]"
 
@@ -207,23 +213,6 @@ def chunk_text(text: str) -> list[str]:
             break
         offset = max(end - CHUNK_OVERLAP, offset + 1)
     return chunks
-
-
-def extract_concepts(text: str) -> list[str]:
-    candidates = QUOTED_CONCEPT_PATTERN.findall(text)
-    candidates.extend(PROPER_NOUN_PHRASE_PATTERN.findall(text))
-    concepts: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        normalized = re.sub(r"\s+", " ", candidate).strip(" .,:;!?()[]{}")
-        key = normalized.casefold()
-        if not normalized or normalized in IGNORED_CONCEPTS or key in seen:
-            continue
-        seen.add(key)
-        concepts.append(normalized)
-        if len(concepts) == CONCEPT_LIMIT_PER_CHUNK:
-            break
-    return concepts
 
 
 def extract_text(content: bytes, media_type: str) -> str:
@@ -261,6 +250,110 @@ def object_key_suffix(file_name: str | None, media_type: str) -> str:
     return ""
 
 
+def safe_object_name(file_name: str | None, media_type: str) -> str:
+    """Return a portable object name while preserving a useful source extension."""
+    candidate = (file_name or "source").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    candidate = re.sub(r"[^A-Za-z0-9._-]+", "-", candidate).strip(".-")
+    if not candidate:
+        candidate = "source"
+    if "." not in candidate:
+        candidate += object_key_suffix(file_name, media_type) or ".bin"
+    return candidate[:180]
+
+
+def document_identity(
+    content_sha256: str,
+    access_level: str,
+    agent_id: str | None,
+    channel_id: str | None,
+    channel_name: str | None,
+) -> str:
+    """Deduplicate only inside the same governance and channel boundary."""
+    scope = "\x1f".join([
+        content_sha256,
+        access_level,
+        agent_id or "",
+        channel_id or "",
+        channel_name or "",
+    ])
+    return hashlib.sha256(scope.encode("utf-8")).hexdigest()
+
+
+def build_record_manifest(
+    *,
+    record_id: UUID,
+    document_id: UUID | None,
+    title: str,
+    source_uri: str | None,
+    media_type: str,
+    content_sha256: str,
+    markdown_sha256: str,
+    content_bytes: int,
+    bucket: str,
+    original_key: str,
+    markdown_key: str,
+    record_key: str,
+    access_level: str,
+    agent_id: str | None,
+    channel_name: str | None,
+    channel_id: str | None,
+    event_id: str | None,
+    event_kind: str | None,
+    event_timestamp: str | None,
+    author_pubkey: str | None,
+    file_url: str | None,
+    file_name: str | None,
+    metadata: dict[str, Any],
+    status: str,
+    error: str | None = None,
+) -> dict[str, Any]:
+    manifest: dict[str, Any] = {
+        "schema": "https://gbuzz.local/schemas/ingestion-record.schema.json",
+        "schema_version": "1.0.0",
+        "record_id": str(record_id),
+        "document_id": str(document_id) if document_id else None,
+        "status": status,
+        "title": title,
+        "source_uri": source_uri,
+        "source": {
+            "media_type": media_type,
+            "file_name": file_name,
+            "file_url": file_url,
+            "content_bytes": content_bytes,
+            "sha256": content_sha256,
+        },
+        "scope": {
+            "access_level": access_level,
+            "agent_id": agent_id,
+            "channel_name": channel_name,
+            "channel_id": channel_id,
+        },
+        "event": {
+            "event_id": event_id,
+            "event_kind": event_kind,
+            "event_timestamp": event_timestamp,
+            "author_pubkey": author_pubkey,
+        },
+        "objects": {
+            "bucket": bucket,
+            "original_key": original_key,
+            "markdown_key": markdown_key,
+            "record_key": record_key,
+            "markdown_sha256": markdown_sha256,
+        },
+        "extractor": {
+            "name": "gcor-proxy",
+            "version": "2",
+            "status": "complete" if status in {"indexed", "backfilled"} else status,
+        },
+        "ingested_at": datetime.now(timezone.utc).isoformat(),
+        "metadata": metadata,
+    }
+    if error:
+        manifest["error"] = error
+    return manifest
+
+
 def parse_metadata_json(raw: str | None) -> dict[str, Any]:
     if raw is None or not raw.strip():
         return {}
@@ -271,6 +364,18 @@ def parse_metadata_json(raw: str | None) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise HTTPException(422, "metadata_json must be a JSON object")
     return parsed
+
+
+def normalize_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 def parse_json_object(raw: str, field_name: str) -> dict[str, Any]:
@@ -552,6 +657,11 @@ async def ensure_bucket_name(client: Any, bucket_name: str) -> None:
         await __import__("asyncio").to_thread(client.head_bucket, Bucket=bucket_name)
     except ClientError:
         await __import__("asyncio").to_thread(client.create_bucket, Bucket=bucket_name)
+    await __import__("asyncio").to_thread(
+        client.put_bucket_versioning,
+        Bucket=bucket_name,
+        VersioningConfiguration={"Status": "Enabled"},
+    )
 
 
 async def embed(texts: list[str]) -> list[list[float]]:
@@ -608,33 +718,300 @@ async def ensure_bucket(app: FastAPI) -> None:
     await ensure_bucket_name(app.state.s3, MINIO_BUCKET)
 
 
-async def get_or_create_concept(
+async def ensure_all_bucket_versioning(client: Any) -> None:
+    response = await __import__("asyncio").to_thread(client.list_buckets)
+    for item in response.get("Buckets", []):
+        await __import__("asyncio").to_thread(
+            client.put_bucket_versioning,
+            Bucket=item["Name"],
+            VersioningConfiguration={"Status": "Enabled"},
+        )
+
+
+async def write_governance_event(
+    request: Request,
+    *,
+    document_id: UUID,
+    action: str,
+    metadata: dict[str, Any],
+    actor: str | None = None,
+    note: str | None = None,
+) -> tuple[str, str]:
+    """Append an immutable governance event beside the document's recovery bundle."""
+    bucket = str(metadata.get("bucket") or MINIO_BUCKET)
+    event_id = uuid4()
+    occurred_at = datetime.now(timezone.utc)
+    key = f"governance/{document_id}/events/{occurred_at:%Y/%m/%d/%H%M%S}-{event_id}.json"
+    event = {
+        "schema_version": "1.0.0",
+        "event_id": str(event_id),
+        "document_id": str(document_id),
+        "action": action,
+        "actor": actor,
+        "note": note,
+        "occurred_at": occurred_at.isoformat(),
+        "knowledge_state": metadata.get("knowledge_state"),
+        "metadata": metadata,
+    }
+    await ensure_bucket_name(request.app.state.s3, bucket)
+    await __import__("asyncio").to_thread(
+        request.app.state.s3.put_object,
+        Bucket=bucket,
+        Key=key,
+        Body=json.dumps(event, ensure_ascii=False, indent=2).encode("utf-8"),
+        ContentType="application/json",
+        Metadata={"event_id": str(event_id), "document_id": str(document_id), "action": action},
+    )
+    return bucket, key
+
+
+def s3_get_bytes(client: Any, bucket: str, key: str) -> bytes:
+    response = client.get_object(Bucket=bucket, Key=key)
+    try:
+        return response["Body"].read()
+    finally:
+        response["Body"].close()
+
+
+def s3_list_keys(client: Any, bucket: str, prefix: str, suffix: str | None = None) -> list[str]:
+    keys: list[str] = []
+    token: str | None = None
+    while True:
+        kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": 1000}
+        if token:
+            kwargs["ContinuationToken"] = token
+        page = client.list_objects_v2(**kwargs)
+        keys.extend(
+            item["Key"] for item in page.get("Contents", [])
+            if suffix is None or item["Key"].endswith(suffix)
+        )
+        if not page.get("IsTruncated"):
+            return keys
+        token = page.get("NextContinuationToken")
+
+
+def parse_effective_time(value: str | None, fallback: datetime) -> datetime:
+    if not value:
+        return fallback
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise HTTPException(422, "event_timestamp must be an ISO-8601 timestamp") from error
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+async def create_session_knowledge(
     connection: asyncpg.Connection,
-    label: str,
+    *,
+    document_id: UUID,
+    record_id: UUID,
+    title: str,
+    content: str,
+    media_type: str,
     access_level: str,
     agent_id: str | None,
-) -> UUID:
-    concept_id = await connection.fetchval(
+    source_uri: str | None,
+    channel_id: str | None,
+    channel_name: str | None,
+    event_id: str | None,
+    event_timestamp: str | None,
+    author_pubkey: str | None,
+    file_url: str | None,
+    file_name: str | None,
+    metadata: dict[str, Any],
+    session_record: dict[str, Any] | None = None,
+) -> tuple[UUID, int]:
+    """Write the canonical session/participant/entry schema and enqueue Graphiti episodes."""
+    now = datetime.now(timezone.utc)
+    occurred_at = parse_effective_time(event_timestamp, now)
+    external_session_id = str(
+        metadata.get("session_id") or channel_id or f"document:{document_id}"
+    )
+    effective_channel_id = channel_id or str(metadata.get("channel_id") or "") or None
+    session_title = str(
+        metadata.get("session_title") or channel_name or f"Session {external_session_id}"
+    )
+    projection_status = (
+        "skipped"
+        if metadata.get("knowledge_state") in {"proposed", "rejected", "archived"}
+        else "pending"
+    )
+    session_id = await connection.fetchval(
         """
-        INSERT INTO gcor.nodes (node_type, label, access_level, agent_id, properties)
-        VALUES ('Concept', $1, $2, $3, jsonb_build_object('extractor', 'rule-based-v1'))
+        INSERT INTO gcor.knowledge_sessions
+            (external_session_id,channel_id,channel_name,access_level,agent_id,title,started_at,metadata)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
         ON CONFLICT DO NOTHING
         RETURNING id
         """,
-        label, access_level, agent_id,
+        external_session_id, effective_channel_id, channel_name, access_level, agent_id,
+        session_title, occurred_at, json.dumps({"schema_version": "1.0.0"}),
     )
-    if concept_id is not None:
-        return concept_id
-    return await connection.fetchval(
-        """
-        SELECT id FROM gcor.nodes
-        WHERE node_type = 'Concept'
-          AND lower(label) = lower($1)
-          AND access_level = $2
-          AND COALESCE(agent_id, '') = COALESCE($3, '')
-        """,
-        label, access_level, agent_id,
-    )
+    if session_id is None:
+        session_id = await connection.fetchval(
+            """
+            SELECT id FROM gcor.knowledge_sessions
+            WHERE external_session_id=$1 AND COALESCE(channel_id,'')=COALESCE($2,'')
+              AND access_level=$3 AND COALESCE(agent_id,'')=COALESCE($4,'')
+            """,
+            external_session_id, effective_channel_id, access_level, agent_id,
+        )
+        await connection.execute(
+            """UPDATE gcor.knowledge_sessions
+               SET started_at=LEAST(started_at,$2),title=$3,updated_at=now()
+               WHERE id=$1""",
+            session_id, occurred_at, session_title,
+        )
+
+    async def add_entry(
+        *,
+        participant_type: str,
+        participant_external_id: str,
+        participant_name: str,
+        entry_type: str,
+        entry_external_id: str,
+        entry_content: str,
+        entry_time: datetime,
+        sequence_no: int | None,
+        participant_document_id: UUID | None,
+        entry_metadata: dict[str, Any],
+    ) -> bool:
+        participant_id = await connection.fetchval(
+            """
+            INSERT INTO gcor.knowledge_participants
+                (session_id,participant_type,external_id,display_name,document_id,metadata)
+            VALUES ($1,$2,$3,$4,$5,$6::jsonb)
+            ON CONFLICT (session_id,participant_type,external_id) DO UPDATE SET
+                display_name=EXCLUDED.display_name,
+                document_id=COALESCE(EXCLUDED.document_id,gcor.knowledge_participants.document_id),
+                metadata=gcor.knowledge_participants.metadata || EXCLUDED.metadata,
+                updated_at=now()
+            RETURNING id
+            """,
+            session_id, participant_type, participant_external_id, participant_name,
+            participant_document_id, json.dumps({"schema_version": "1.0.0"}),
+        )
+        entry_id = await connection.fetchval(
+            """
+            INSERT INTO gcor.knowledge_entries
+                (session_id,participant_id,source_document_id,source_record_id,external_id,
+                 entry_type,content,occurred_at,sequence_no,metadata)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+            ON CONFLICT (source_record_id,external_id,entry_type) DO NOTHING
+            RETURNING id
+            """,
+            session_id, participant_id, document_id, record_id, entry_external_id,
+            entry_type, entry_content, entry_time, sequence_no, json.dumps(entry_metadata),
+        )
+        if entry_id is None:
+            return False
+        previous_entry_id = await connection.fetchval(
+            """SELECT id FROM gcor.knowledge_entries
+               WHERE session_id=$1 AND id<>$2 AND occurred_at <= $3
+               ORDER BY occurred_at DESC,sequence_no DESC NULLS LAST,created_at DESC LIMIT 1""",
+            session_id, entry_id, entry_time,
+        )
+        await connection.execute(
+            """
+            INSERT INTO gcor.graphiti_projection
+                (entry_id,graphiti_episode_id,group_id,previous_episode_id,status)
+            VALUES ($1,$1,$2,$3,$4)
+            ON CONFLICT (entry_id) DO NOTHING
+            """,
+            entry_id, str(session_id), previous_entry_id, projection_status,
+        )
+        return True
+
+    base_metadata = {
+        "schema_version": "1.0.0",
+        "source_uri": source_uri,
+        "source_document_id": str(document_id),
+        "source_record_id": str(record_id),
+        "bucket": metadata.get("bucket"),
+        "original_key": metadata.get("original_key"),
+        "markdown_key": metadata.get("markdown_key"),
+        "record_key": metadata.get("record_key"),
+        "media_type": media_type,
+    }
+    created = 0
+    if session_record is not None:
+        for sequence_no, message in enumerate(session_record["messages"]):
+            message_content = str(message.get("content") or "").strip()
+            if not message_content:
+                continue
+            message_time = parse_effective_time(message.get("created_at"), occurred_at)
+            author = str(message.get("author_pubkey") or "unknown")
+            created += int(await add_entry(
+                participant_type="user", participant_external_id=author,
+                participant_name=str(message.get("author_name") or author),
+                entry_type="message", entry_external_id=str(message["message_id"]),
+                entry_content=message_content, entry_time=message_time, sequence_no=sequence_no,
+                participant_document_id=None,
+                entry_metadata=base_metadata | {"message_id": message["message_id"]},
+            ))
+    else:
+        record_type = str(metadata.get("record_type") or "")
+        is_document = bool(
+            file_url or file_name or record_type in {
+                "attachment", "buzz_attachment", "document", "file_upload"
+            }
+        )
+        if is_document:
+            participant_type = "document"
+            participant_external_id = str(document_id)
+            participant_name = title
+            entry_type = "document"
+            participant_document_id = document_id
+        elif author_pubkey:
+            participant_type = "user"
+            participant_external_id = author_pubkey
+            participant_name = str(metadata.get("author_name") or author_pubkey)
+            entry_type = "message"
+            participant_document_id = None
+        elif agent_id:
+            participant_type = "agent"
+            participant_external_id = agent_id
+            participant_name = str(metadata.get("agent_name") or agent_id)
+            entry_type = "message"
+            participant_document_id = None
+        else:
+            participant_type = "system"
+            participant_external_id = "gbuzz"
+            participant_name = "Gbuzz"
+            entry_type = "system"
+            participant_document_id = None
+        base_external_id = event_id or str(record_id)
+        episode_parts = chunk_text(content) if is_document else [content]
+        for ordinal, episode_content in enumerate(episode_parts):
+            segment_metadata = base_metadata | {
+                "title": title,
+                "record_type": record_type,
+            }
+            entry_external_id = base_external_id
+            sequence_no = None
+            if is_document:
+                entry_external_id = f"{base_external_id}:chunk:{ordinal}"
+                sequence_no = ordinal
+                segment_metadata |= {
+                    "parent_external_id": base_external_id,
+                    "segment_ordinal": ordinal,
+                    "segment_count": len(episode_parts),
+                }
+            created += int(await add_entry(
+                participant_type=participant_type,
+                participant_external_id=participant_external_id,
+                participant_name=participant_name,
+                entry_type=entry_type,
+                entry_external_id=entry_external_id,
+                entry_content=episode_content,
+                entry_time=occurred_at,
+                sequence_no=sequence_no,
+                participant_document_id=participant_document_id,
+                entry_metadata=segment_metadata,
+            ))
+    return session_id, created
 
 
 @asynccontextmanager
@@ -653,6 +1030,7 @@ async def lifespan(app: FastAPI):
     app.state.pool = await asyncpg.create_pool(**pool_options)
     app.state.s3 = minio_client()
     await ensure_bucket(app)
+    await ensure_all_bucket_versioning(app.state.s3)
     yield
     await app.state.pool.close()
 
@@ -692,22 +1070,21 @@ async def ingest_payload(
     file_url: str | None,
     file_name: str | None,
     metadata: dict[str, Any],
+    session_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if len(content) > MAX_INGEST_FILE_BYTES:
         raise HTTPException(413, f"payload exceeds MAX_INGEST_FILE_BYTES ({MAX_INGEST_FILE_BYTES})")
 
-    content_text = extract_text(content, media_type)
-    chunks = chunk_text(content_text)
-    if not chunks:
-        raise HTTPException(422, "The supplied content contains no extractable text")
     digest = hashlib.sha256(content).hexdigest()
+    identity_digest = document_identity(digest, access_level, agent_id, channel_id, channel_name)
     now = datetime.now(timezone.utc)
+    parse_effective_time(event_timestamp, now)
     bucket_name = channel_bucket_name(channel_name) if channel_name else MINIO_BUCKET
-    object_key = f"gcor/{now:%Y/%m/%d/%H%M%S}-{digest[:12]}{object_key_suffix(file_name, media_type)}"
-
-    vectors = await embed(chunks)
-    if len(vectors) != len(chunks):
-        raise HTTPException(502, "Embedding provider returned an unexpected number of vectors")
+    record_id = uuid4()
+    bundle_prefix = f"bundles/{now:%Y/%m/%d}/{record_id}"
+    original_key = f"{bundle_prefix}/original/{safe_object_name(file_name, media_type)}"
+    markdown_key = f"{bundle_prefix}/content.md"
+    record_key = f"{bundle_prefix}/record.json"
     object_metadata = {
         "ingested_at": now.isoformat(),
         "sha256": digest,
@@ -730,10 +1107,95 @@ async def ingest_payload(
     await __import__("asyncio").to_thread(
         request.app.state.s3.put_object,
         Bucket=bucket_name,
-        Key=object_key,
+        Key=original_key,
         Body=content,
         ContentType=media_type,
         Metadata=object_metadata,
+    )
+
+    try:
+        content_text = extract_text(content, media_type)
+        chunks = chunk_text(content_text)
+        if not chunks:
+            raise ValueError("The supplied content contains no extractable text")
+        vectors = await embed(chunks)
+        if len(vectors) != len(chunks):
+            raise ValueError("Embedding provider returned an unexpected number of vectors")
+    except Exception as error:
+        error_text = str(getattr(error, "detail", error))[:2000]
+        quarantine_body = (
+            "# Content archived pending extraction\n\n"
+            "The original source bytes were retained successfully, but text extraction or indexing failed.\n\n"
+            f"- Media type: `{media_type}`\n"
+            f"- SHA-256: `{digest}`\n"
+            f"- Error: `{error_text}`\n"
+        )
+        markdown_content = markdown_envelope(
+            title, source_uri, access_level, channel_name, channel_id, event_id, event_kind,
+            event_timestamp, author_pubkey,
+            {**metadata, "record_id": str(record_id), "original_key": original_key, "extraction_status": "quarantined"},
+            quarantine_body,
+        ).encode("utf-8")
+        markdown_digest = hashlib.sha256(markdown_content).hexdigest()
+        await __import__("asyncio").to_thread(
+            request.app.state.s3.put_object, Bucket=bucket_name, Key=markdown_key,
+            Body=markdown_content, ContentType="text/markdown",
+            Metadata={"record_id": str(record_id), "sha256": markdown_digest, "status": "quarantined"},
+        )
+        quarantine_metadata = dict(metadata) | {
+            "ingested_at": now.isoformat(), "bucket": bucket_name, "channel_name": channel_name,
+            "channel_id": channel_id, "event_id": event_id, "event_kind": event_kind,
+            "event_timestamp": event_timestamp, "author_pubkey": author_pubkey, "file_url": file_url,
+            "file_name": file_name, "content_bytes": len(content), "chunk_count": 0,
+            "record_id": str(record_id), "original_key": original_key,
+            "markdown_key": markdown_key, "record_key": record_key,
+            "extraction_status": "quarantined",
+        }
+        manifest = build_record_manifest(
+            record_id=record_id, document_id=None, title=title, source_uri=source_uri,
+            media_type=media_type, content_sha256=digest, markdown_sha256=markdown_digest,
+            content_bytes=len(content), bucket=bucket_name, original_key=original_key,
+            markdown_key=markdown_key, record_key=record_key, access_level=access_level,
+            agent_id=agent_id, channel_name=channel_name, channel_id=channel_id,
+            event_id=event_id, event_kind=event_kind, event_timestamp=event_timestamp,
+            author_pubkey=author_pubkey, file_url=file_url, file_name=file_name,
+            metadata=quarantine_metadata, status="quarantined", error=error_text,
+        )
+        await __import__("asyncio").to_thread(
+            request.app.state.s3.put_object, Bucket=bucket_name, Key=record_key,
+            Body=json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+            ContentType="application/json", Metadata={"record_id": str(record_id), "status": "quarantined"},
+        )
+        await request.app.state.pool.execute(
+            """INSERT INTO gcor.ingestion_records
+               (id, document_id, content_sha256, bucket, original_key, markdown_key, record_key,
+                channel_id, channel_name, event_id, event_kind, source_uri, status, metadata, error)
+               VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'quarantined',$12::jsonb,$13)""",
+            record_id, digest, bucket_name, original_key, markdown_key, record_key,
+            channel_id, channel_name, event_id, event_kind, source_uri,
+            json.dumps(quarantine_metadata), error_text,
+        )
+        return {
+            "document_id": None, "record_id": str(record_id), "deduplicated": False,
+            "quarantined": True, "status": "quarantined", "error": error_text, "chunks": 0,
+            "bucket": bucket_name, "object_key": original_key, "original_key": original_key,
+            "markdown_key": markdown_key, "record_key": record_key,
+        }
+
+    markdown_content = markdown_envelope(
+        title, source_uri, access_level, channel_name, channel_id, event_id, event_kind,
+        event_timestamp, author_pubkey,
+        {**metadata, "record_id": str(record_id), "original_key": original_key},
+        content_text,
+    ).encode("utf-8")
+    markdown_digest = hashlib.sha256(markdown_content).hexdigest()
+    await __import__("asyncio").to_thread(
+        request.app.state.s3.put_object,
+        Bucket=bucket_name,
+        Key=markdown_key,
+        Body=markdown_content,
+        ContentType="text/markdown",
+        Metadata={"record_id": str(record_id), "sha256": markdown_digest},
     )
 
     metadata.update({
@@ -749,35 +1211,73 @@ async def ingest_payload(
         "file_name": file_name,
         "content_bytes": len(content),
         "chunk_count": len(chunks),
+        "record_id": str(record_id),
+        "original_key": original_key,
+        "markdown_key": markdown_key,
+        "record_key": record_key,
     })
 
     async with request.app.state.pool.acquire() as connection:
         async with connection.transaction():
             document_id = await connection.fetchval(
                 """
-                INSERT INTO gcor.documents (content_sha256, title, source_uri, object_key, media_type, access_level, agent_id, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-                ON CONFLICT (content_sha256) DO UPDATE SET
+                INSERT INTO gcor.documents (content_sha256, identity_sha256, title, source_uri, object_key, media_type, access_level, agent_id, metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+                ON CONFLICT (identity_sha256) DO UPDATE SET
                     updated_at = now(),
                     title = EXCLUDED.title,
                     source_uri = EXCLUDED.source_uri,
-                    object_key = EXCLUDED.object_key,
                     media_type = EXCLUDED.media_type,
-                    access_level = EXCLUDED.access_level,
-                    agent_id = EXCLUDED.agent_id,
                     metadata = gcor.documents.metadata || EXCLUDED.metadata
                 RETURNING id
                 """,
-                digest, title, source_uri, object_key, media_type, access_level, agent_id, json.dumps(metadata),
+                digest, identity_digest, title, source_uri, original_key, media_type, access_level, agent_id, json.dumps(metadata),
             )
             existing = await connection.fetchval("SELECT count(*) FROM gcor.chunks WHERE document_id = $1", document_id)
             if existing:
+                manifest = build_record_manifest(
+                    record_id=record_id, document_id=document_id, title=title, source_uri=source_uri,
+                    media_type=media_type, content_sha256=digest, markdown_sha256=markdown_digest,
+                    content_bytes=len(content), bucket=bucket_name, original_key=original_key,
+                    markdown_key=markdown_key, record_key=record_key, access_level=access_level,
+                    agent_id=agent_id, channel_name=channel_name, channel_id=channel_id,
+                    event_id=event_id, event_kind=event_kind, event_timestamp=event_timestamp,
+                    author_pubkey=author_pubkey, file_url=file_url, file_name=file_name,
+                    metadata=metadata, status="indexed",
+                )
+                await __import__("asyncio").to_thread(
+                    request.app.state.s3.put_object, Bucket=bucket_name, Key=record_key,
+                    Body=json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+                    ContentType="application/json", Metadata={"record_id": str(record_id), "status": "indexed"},
+                )
+                await connection.execute(
+                    """INSERT INTO gcor.ingestion_records
+                       (id, document_id, content_sha256, bucket, original_key, markdown_key, record_key,
+                        channel_id, channel_name, event_id, event_kind, source_uri, status, metadata)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'indexed',$13::jsonb)""",
+                    record_id, document_id, digest, bucket_name, original_key, markdown_key, record_key,
+                    channel_id, channel_name, event_id, event_kind, source_uri, json.dumps(metadata),
+                )
+                knowledge_session_id, knowledge_entry_count = await create_session_knowledge(
+                    connection, document_id=document_id, record_id=record_id, title=title,
+                    content=content_text, media_type=media_type, access_level=access_level,
+                    agent_id=agent_id, source_uri=source_uri, channel_id=channel_id,
+                    channel_name=channel_name, event_id=event_id, event_timestamp=event_timestamp,
+                    author_pubkey=author_pubkey, file_url=file_url, file_name=file_name,
+                    metadata=metadata, session_record=session_record,
+                )
                 return {
                     "document_id": str(document_id),
+                    "record_id": str(record_id),
                     "deduplicated": True,
                     "chunks": existing,
                     "bucket": bucket_name,
-                    "object_key": object_key,
+                    "object_key": original_key,
+                    "original_key": original_key,
+                    "markdown_key": markdown_key,
+                    "record_key": record_key,
+                    "knowledge_session_id": str(knowledge_session_id),
+                    "knowledge_entries": knowledge_entry_count,
                 }
             document_node_id = await connection.fetchval(
                 """INSERT INTO gcor.nodes (document_id, node_type, label, content, access_level, agent_id)
@@ -799,22 +1299,49 @@ async def ingest_payload(
                     "INSERT INTO gcor.edges (source_id, target_id, relation) VALUES ($1, $2, 'CONTAINS')",
                     document_node_id, node_id,
                 )
-                for concept_label in extract_concepts(content_chunk):
-                    concept_id = await get_or_create_concept(connection, concept_label, access_level, agent_id)
-                    await connection.execute(
-                        """
-                        INSERT INTO gcor.edges (source_id, target_id, relation)
-                        VALUES ($1, $2, 'ABOUT')
-                        ON CONFLICT DO NOTHING
-                        """,
-                        node_id, concept_id,
-                    )
+            manifest = build_record_manifest(
+                record_id=record_id, document_id=document_id, title=title, source_uri=source_uri,
+                media_type=media_type, content_sha256=digest, markdown_sha256=markdown_digest,
+                content_bytes=len(content), bucket=bucket_name, original_key=original_key,
+                markdown_key=markdown_key, record_key=record_key, access_level=access_level,
+                agent_id=agent_id, channel_name=channel_name, channel_id=channel_id,
+                event_id=event_id, event_kind=event_kind, event_timestamp=event_timestamp,
+                author_pubkey=author_pubkey, file_url=file_url, file_name=file_name,
+                metadata=metadata, status="indexed",
+            )
+            await __import__("asyncio").to_thread(
+                request.app.state.s3.put_object, Bucket=bucket_name, Key=record_key,
+                Body=json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+                ContentType="application/json", Metadata={"record_id": str(record_id), "status": "indexed"},
+            )
+            await connection.execute(
+                """INSERT INTO gcor.ingestion_records
+                   (id, document_id, content_sha256, bucket, original_key, markdown_key, record_key,
+                    channel_id, channel_name, event_id, event_kind, source_uri, status, metadata)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'indexed',$13::jsonb)""",
+                record_id, document_id, digest, bucket_name, original_key, markdown_key, record_key,
+                channel_id, channel_name, event_id, event_kind, source_uri, json.dumps(metadata),
+            )
+            knowledge_session_id, knowledge_entry_count = await create_session_knowledge(
+                connection, document_id=document_id, record_id=record_id, title=title,
+                content=content_text, media_type=media_type, access_level=access_level,
+                agent_id=agent_id, source_uri=source_uri, channel_id=channel_id,
+                channel_name=channel_name, event_id=event_id, event_timestamp=event_timestamp,
+                author_pubkey=author_pubkey, file_url=file_url, file_name=file_name,
+                metadata=metadata, session_record=session_record,
+            )
     return {
         "document_id": str(document_id),
+        "record_id": str(record_id),
         "deduplicated": False,
         "chunks": len(chunks),
         "bucket": bucket_name,
-        "object_key": object_key,
+        "object_key": original_key,
+        "original_key": original_key,
+        "markdown_key": markdown_key,
+        "record_key": record_key,
+        "knowledge_session_id": str(knowledge_session_id),
+        "knowledge_entries": knowledge_entry_count,
     }
 
 
@@ -969,6 +1496,37 @@ def format_answer_from_chunks(query: str, matches: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+async def generate_grounded_answer(query: str, matches: list[dict[str, Any]]) -> str:
+    """Synthesize a local, cited answer and fall back safely to ranked excerpts."""
+    fallback = format_answer_from_chunks(query, matches)
+    if not matches or not GENERATION_MODEL:
+        return fallback
+    evidence: list[str] = []
+    for index, item in enumerate(matches[:6], start=1):
+        excerpt = re.sub(r"\s+", " ", item["content"]).strip()[:1200]
+        evidence.append(f"[{index}] {item.get('title') or 'Untitled'}: {excerpt}")
+    prompt = (
+        "Answer the question using only the supplied evidence. "
+        "Cite supporting evidence inline with bracketed numbers such as [1]. "
+        "If the evidence is insufficient or conflicting, say so explicitly. "
+        "Do not invent facts.\n\n"
+        f"Question: {query}\n\nEvidence:\n" + "\n".join(evidence) + "\n\nAnswer:"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                f"{OLLAMA_HOST.rstrip('/')}/api/generate",
+                json={"model": GENERATION_MODEL, "prompt": prompt, "stream": False, "options": {"temperature": 0}},
+            )
+            response.raise_for_status()
+            answer = str(response.json().get("response") or "").strip()
+            if answer and not re.search(r"\[[1-9][0-9]*\]", answer):
+                answer += "\n\nEvidence references: " + ", ".join(f"[{index}]" for index in range(1, min(len(matches), 6) + 1))
+            return answer or fallback
+    except Exception:
+        return fallback
+
+
 def compose_chat_reply(
     query: str,
     citations: list[dict[str, Any]],
@@ -1020,6 +1578,28 @@ async def link_documents_relation(request: Request, from_document_id: UUID, to_d
                 "INSERT INTO gcor.edges (source_id, target_id, relation) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
                 source_node, target_node, relation,
             )
+
+
+async def queue_graphiti_lifecycle(request: Request, document_id: UUID, transition: str) -> None:
+    if transition == "approved":
+        await request.app.state.pool.execute(
+            """UPDATE gcor.graphiti_projection gp
+               SET operation='add',status='pending',attempts=0,error=NULL,
+                   next_attempt_at=now(),updated_at=now()
+               FROM gcor.knowledge_entries e
+               WHERE gp.entry_id=e.id AND e.source_document_id=$1""",
+            document_id,
+        )
+    elif transition in {"archived", "rejected"}:
+        await request.app.state.pool.execute(
+            """UPDATE gcor.graphiti_projection gp
+               SET operation='delete',status='pending',attempts=0,error=NULL,
+                   next_attempt_at=now(),updated_at=now()
+               FROM gcor.knowledge_entries e
+               WHERE gp.entry_id=e.id AND e.source_document_id=$1
+                 AND gp.status='submitted' AND gp.reconciled_at IS NOT NULL""",
+            document_id,
+        )
 
 
 @app.post("/api/ingest")
@@ -1185,6 +1765,7 @@ async def ingest_document(
         file_url=file_url,
         file_name=file_name or uploaded_filename,
         metadata=dict(metadata),
+        session_record=session_record,
     )
 
     replay_attachments = attachments + session_attachments
@@ -1214,6 +1795,8 @@ async def ingest_document(
                     "attachment_message_id": attachment.get("message_id"),
                     "attachment_name": attachment_title,
                 }
+                if session_record is not None:
+                    attachment_metadata["session_id"] = session_record["session_id"]
                 attachment_result = await ingest_payload(
                     request,
                     content=attachment_content,
@@ -1321,7 +1904,7 @@ async def ask(
     ]
     REQUEST_DURATION.observe(time.perf_counter() - started)
     return {
-        "answer": format_answer_from_chunks(query, normalized),
+        "answer": await generate_grounded_answer(query, normalized),
         "citations": citations,
         "chunks": normalized,
         "graph_nodes": [dict(row) | {"id": str(row["id"])} for row in graph_nodes],
@@ -1367,7 +1950,7 @@ async def ask_reply(
         }
         for item in normalized[: payload.max_citations]
     ]
-    answer = format_answer_from_chunks(query, normalized)
+    answer = await generate_grounded_answer(query, normalized)
     reply_text = compose_chat_reply(
         query,
         citations,
@@ -1530,12 +2113,23 @@ async def approve_knowledge(
             row_metadata = {}
     if not isinstance(row_metadata, dict):
         row_metadata = {}
+    await queue_graphiti_lifecycle(request, target_document_id, "approved")
+    governance_bucket, governance_event_key = await write_governance_event(
+        request,
+        document_id=target_document_id,
+        action="approved",
+        metadata=row_metadata,
+        actor=payload.approved_by,
+        note=payload.note,
+    )
     return {
         "action": "approve",
         "document_id": str(row["id"]),
         "title": row["title"],
         "source_uri": row["source_uri"],
         "knowledge_state": row_metadata.get("knowledge_state"),
+        "governance_bucket": governance_bucket,
+        "governance_event_key": governance_event_key,
     }
 
 
@@ -1614,6 +2208,15 @@ async def transition_knowledge(
             row_metadata = {}
     if not isinstance(row_metadata, dict):
         row_metadata = {}
+    await queue_graphiti_lifecycle(request, target_document_id, payload.transition)
+    governance_bucket, governance_event_key = await write_governance_event(
+        request,
+        document_id=target_document_id,
+        action=payload.transition,
+        metadata=row_metadata,
+        actor=payload.changed_by,
+        note=payload.note,
+    )
     return {
         "action": "transition",
         "document_id": str(row["id"]),
@@ -1621,6 +2224,8 @@ async def transition_knowledge(
         "source_uri": row["source_uri"],
         "knowledge_state": row_metadata.get("knowledge_state"),
         "knowledge_transition": row_metadata.get("knowledge_transition"),
+        "governance_bucket": governance_bucket,
+        "governance_event_key": governance_event_key,
     }
 
 
@@ -1636,6 +2241,467 @@ async def collections(
            GROUP BY d.id ORDER BY d.created_at DESC"""
     )
     return [{**dict(row), "id": str(row["id"])} for row in rows]
+
+
+@app.get("/api/sessions")
+async def list_knowledge_sessions(
+    request: Request,
+    channel_id: str | None = None,
+    limit: int = 100,
+    x_gcor_webhook_secret: Annotated[str | None, Header()] = None,
+):
+    verify_stack_api_secret(x_gcor_webhook_secret)
+    if limit < 1 or limit > 500:
+        raise HTTPException(422, "limit must be between 1 and 500")
+    rows = await request.app.state.pool.fetch(
+        """
+        SELECT s.id,s.external_session_id,s.channel_id,s.channel_name,s.access_level,s.agent_id,
+               s.title,s.started_at,s.ended_at,s.metadata,
+               count(DISTINCT p.id) AS participant_count,
+               count(DISTINCT e.id) AS entry_count,
+               count(DISTINCT e.id) FILTER (WHERE gp.status='submitted') AS graphiti_submitted,
+               count(DISTINCT e.id) FILTER (WHERE gp.status='submitted' AND gp.reconciled_at IS NOT NULL)
+                   AS graphiti_reconciled,
+               count(DISTINCT e.id) FILTER (WHERE gp.status IN ('pending','processing')
+                                             OR (gp.status='submitted' AND gp.reconciled_at IS NULL))
+                   AS graphiti_pending,
+               count(DISTINCT e.id) FILTER (WHERE gp.status='failed') AS graphiti_failed
+        FROM gcor.knowledge_sessions s
+        LEFT JOIN gcor.knowledge_participants p ON p.session_id=s.id
+        LEFT JOIN gcor.knowledge_entries e ON e.session_id=s.id
+        LEFT JOIN gcor.graphiti_projection gp ON gp.entry_id=e.id
+        WHERE ($1::text IS NULL OR s.channel_id=$1)
+        GROUP BY s.id
+        ORDER BY s.started_at DESC
+        LIMIT $2
+        """,
+        channel_id, limit,
+    )
+    return [dict(row) | {"id": str(row["id"])} for row in rows]
+
+
+@app.get("/api/graphiti/status")
+async def graphiti_projection_status(
+    request: Request,
+    x_gcor_webhook_secret: Annotated[str | None, Header()] = None,
+):
+    """Report the rebuildable graph projection without making it a core health dependency."""
+    verify_stack_api_secret(x_gcor_webhook_secret)
+    row = await request.app.state.pool.fetchrow(
+        """
+        SELECT count(*) AS total,
+               count(*) FILTER (WHERE status='pending') AS pending,
+               count(*) FILTER (WHERE status='processing') AS processing,
+               count(*) FILTER (WHERE status='submitted' AND reconciled_at IS NULL) AS in_flight,
+               count(*) FILTER (WHERE status='submitted' AND reconciled_at IS NOT NULL) AS reconciled,
+               count(*) FILTER (WHERE status='failed' AND attempts < $1) AS retryable,
+               count(*) FILTER (WHERE status='failed' AND attempts >= $1) AS dead_letter,
+               count(*) FILTER (WHERE status='skipped') AS skipped,
+               min(created_at) FILTER (
+                   WHERE status IN ('pending','processing','failed')
+                      OR (status='submitted' AND reconciled_at IS NULL)
+               ) AS oldest_unfinished_at
+        FROM gcor.graphiti_projection
+        """,
+        int(os.getenv("GRAPHITI_PROJECTOR_MAX_ATTEMPTS", "8")),
+    )
+    return dict(row)
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_knowledge_session(
+    session_id: str,
+    request: Request,
+    x_gcor_webhook_secret: Annotated[str | None, Header()] = None,
+):
+    verify_stack_api_secret(x_gcor_webhook_secret)
+    try:
+        parsed_session_id = UUID(session_id)
+    except ValueError as error:
+        raise HTTPException(422, "session_id must be a valid UUID") from error
+    session = await request.app.state.pool.fetchrow(
+        "SELECT * FROM gcor.knowledge_sessions WHERE id=$1", parsed_session_id,
+    )
+    if session is None:
+        raise HTTPException(404, "Knowledge session not found")
+    participants = await request.app.state.pool.fetch(
+        """SELECT id,participant_type,external_id,display_name,document_id,metadata,created_at
+           FROM gcor.knowledge_participants WHERE session_id=$1 ORDER BY created_at,id""",
+        parsed_session_id,
+    )
+    entries = await request.app.state.pool.fetch(
+        """SELECT entry_id,participant_id,participant_type,participant_name,entry_type,
+                  entry_external_id,content,occurred_at,sequence_no,source_document_id,
+                  source_record_id,graphiti_episode_id,group_id,graphiti_status,
+                  graphiti_attempts,graphiti_error,metadata
+           FROM gcor.session_knowledge WHERE session_id=$1
+           ORDER BY occurred_at,sequence_no NULLS LAST,entry_id""",
+        parsed_session_id,
+    )
+    return {
+        "session": dict(session) | {"id": str(session["id"])},
+        "participants": [
+            dict(row) | {
+                "id": str(row["id"]),
+                "document_id": str(row["document_id"]) if row["document_id"] else None,
+            }
+            for row in participants
+        ],
+        "entries": [
+            dict(row) | {
+                "entry_id": str(row["entry_id"]),
+                "participant_id": str(row["participant_id"]),
+                "source_document_id": str(row["source_document_id"]) if row["source_document_id"] else None,
+                "source_record_id": str(row["source_record_id"]),
+                "graphiti_episode_id": str(row["graphiti_episode_id"]) if row["graphiti_episode_id"] else None,
+            }
+            for row in entries
+        ],
+    }
+
+
+@app.get("/api/recovery/records")
+async def recovery_records(
+    request: Request,
+    limit: int = 100,
+    channel_id: str | None = None,
+    verify_objects: bool = False,
+    x_gcor_webhook_secret: Annotated[str | None, Header()] = None,
+):
+    """List the immutable S3 bundle pointers needed to reconstruct the retrieval index."""
+    verify_stack_api_secret(x_gcor_webhook_secret)
+    if limit < 1 or limit > 1000:
+        raise HTTPException(422, "limit must be between 1 and 1000")
+    rows = await request.app.state.pool.fetch(
+        """SELECT r.id, r.document_id, r.content_sha256, r.bucket, r.original_key,
+                  r.markdown_key, r.record_key, r.channel_id, r.channel_name,
+                  r.event_id, r.event_kind, r.source_uri, r.status, r.created_at,
+                  d.title, d.media_type, d.access_level
+           FROM gcor.ingestion_records r
+           LEFT JOIN gcor.documents d ON d.id = r.document_id
+           WHERE ($1::text IS NULL OR r.channel_id = $1)
+           ORDER BY r.created_at DESC
+           LIMIT $2""",
+        channel_id,
+        limit,
+    )
+    records = [
+        dict(row) | {
+            "id": str(row["id"]),
+            "document_id": str(row["document_id"]) if row["document_id"] else None,
+        }
+        for row in rows
+    ]
+    if verify_objects:
+        for record in records:
+            object_status: dict[str, str] = {}
+            for field in ("original_key", "markdown_key", "record_key"):
+                try:
+                    await __import__("asyncio").to_thread(
+                        request.app.state.s3.head_object,
+                        Bucket=record["bucket"],
+                        Key=record[field],
+                    )
+                    object_status[field] = "present"
+                except ClientError as error:
+                    code = str(error.response.get("Error", {}).get("Code", "error"))
+                    object_status[field] = f"missing:{code}"
+            record["object_status"] = object_status
+            record["recoverable"] = all(value == "present" for value in object_status.values())
+    return records
+
+
+@app.post("/api/recovery/backfill")
+async def recovery_backfill(
+    payload: RecoveryOperationRequest,
+    request: Request,
+    x_gcor_webhook_secret: Annotated[str | None, Header()] = None,
+):
+    """Create governed bundles for documents created before bundle archival was introduced."""
+    verify_stack_api_secret(x_gcor_webhook_secret)
+    rows = await request.app.state.pool.fetch(
+        """SELECT d.*, string_agg(c.content, E'\n\n' ORDER BY c.ordinal) AS recovered_text
+           FROM gcor.documents d
+           LEFT JOIN gcor.chunks c ON c.document_id = d.id
+           WHERE NOT EXISTS (SELECT 1 FROM gcor.ingestion_records r WHERE r.document_id = d.id)
+           GROUP BY d.id
+           ORDER BY d.created_at
+           LIMIT $1""",
+        payload.limit,
+    )
+    if payload.dry_run:
+        return {"dry_run": True, "candidates": len(rows), "document_ids": [str(row["id"]) for row in rows]}
+
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        document_id = row["id"]
+        metadata = normalize_json_dict(row["metadata"])
+        bucket = str(metadata.get("bucket") or MINIO_BUCKET)
+        if payload.bucket and bucket != payload.bucket:
+            continue
+        await ensure_bucket_name(request.app.state.s3, bucket)
+        original_content: bytes
+        original_media_type = row["media_type"]
+        original_name = safe_object_name(metadata.get("file_name"), original_media_type)
+        reconstructed = False
+        try:
+            original_content = await __import__("asyncio").to_thread(
+                s3_get_bytes, request.app.state.s3, bucket, row["object_key"]
+            )
+        except ClientError:
+            original_content = (row["recovered_text"] or "").encode("utf-8")
+            original_media_type = "text/markdown"
+            original_name = "legacy-reconstructed.md"
+            reconstructed = True
+
+        record_id = uuid4()
+        now = datetime.now(timezone.utc)
+        prefix = f"bundles/{now:%Y/%m/%d}/{record_id}"
+        original_key = f"{prefix}/original/{original_name}"
+        markdown_key = f"{prefix}/content.md"
+        record_key = f"{prefix}/record.json"
+        recovered_text = row["recovered_text"] or extract_text(original_content, original_media_type)
+        markdown_content = markdown_envelope(
+            row["title"], row["source_uri"], row["access_level"], metadata.get("channel_name"),
+            metadata.get("channel_id"), metadata.get("event_id"), metadata.get("event_kind"),
+            metadata.get("event_timestamp"), metadata.get("author_pubkey"),
+            {**metadata, "record_id": str(record_id), "legacy_backfill": True, "source_reconstructed": reconstructed},
+            recovered_text,
+        ).encode("utf-8")
+        content_digest = hashlib.sha256(original_content).hexdigest()
+        markdown_digest = hashlib.sha256(markdown_content).hexdigest()
+        backfill_metadata = metadata | {
+            "bucket": bucket, "record_id": str(record_id), "original_key": original_key,
+            "markdown_key": markdown_key, "record_key": record_key, "legacy_backfill": True,
+            "source_reconstructed": reconstructed,
+        }
+        manifest = build_record_manifest(
+            record_id=record_id, document_id=document_id, title=row["title"], source_uri=row["source_uri"],
+            media_type=original_media_type, content_sha256=content_digest, markdown_sha256=markdown_digest,
+            content_bytes=len(original_content), bucket=bucket, original_key=original_key,
+            markdown_key=markdown_key, record_key=record_key, access_level=row["access_level"],
+            agent_id=row["agent_id"], channel_name=metadata.get("channel_name"),
+            channel_id=metadata.get("channel_id"), event_id=metadata.get("event_id"),
+            event_kind=metadata.get("event_kind"), event_timestamp=metadata.get("event_timestamp"),
+            author_pubkey=metadata.get("author_pubkey"), file_url=metadata.get("file_url"),
+            file_name=metadata.get("file_name"), metadata=backfill_metadata, status="backfilled",
+        )
+        await __import__("asyncio").to_thread(
+            request.app.state.s3.put_object, Bucket=bucket, Key=original_key, Body=original_content,
+            ContentType=original_media_type, Metadata={"record_id": str(record_id), "sha256": content_digest, "status": "backfilled"},
+        )
+        await __import__("asyncio").to_thread(
+            request.app.state.s3.put_object, Bucket=bucket, Key=markdown_key, Body=markdown_content,
+            ContentType="text/markdown", Metadata={"record_id": str(record_id), "sha256": markdown_digest, "status": "backfilled"},
+        )
+        await __import__("asyncio").to_thread(
+            request.app.state.s3.put_object, Bucket=bucket, Key=record_key,
+            Body=json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+            ContentType="application/json", Metadata={"record_id": str(record_id), "status": "backfilled"},
+        )
+        async with request.app.state.pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    """INSERT INTO gcor.ingestion_records
+                       (id, document_id, content_sha256, bucket, original_key, markdown_key, record_key,
+                        channel_id, channel_name, event_id, event_kind, source_uri, status, metadata)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'backfilled',$13::jsonb)""",
+                    record_id, document_id, content_digest, bucket, original_key, markdown_key, record_key,
+                    metadata.get("channel_id"), metadata.get("channel_name"), metadata.get("event_id"),
+                    metadata.get("event_kind"), row["source_uri"], json.dumps(backfill_metadata),
+                )
+                knowledge_session_id, knowledge_entries = await create_session_knowledge(
+                    connection, document_id=document_id, record_id=record_id, title=row["title"],
+                    content=recovered_text, media_type=original_media_type,
+                    access_level=row["access_level"], agent_id=row["agent_id"],
+                    source_uri=row["source_uri"], channel_id=metadata.get("channel_id"),
+                    channel_name=metadata.get("channel_name"), event_id=metadata.get("event_id"),
+                    event_timestamp=metadata.get("event_timestamp"),
+                    author_pubkey=metadata.get("author_pubkey"), file_url=metadata.get("file_url"),
+                    file_name=metadata.get("file_name"), metadata=backfill_metadata,
+                )
+        results.append({
+            "document_id": str(document_id), "record_id": str(record_id),
+            "knowledge_session_id": str(knowledge_session_id), "knowledge_entries": knowledge_entries,
+            "reconstructed": reconstructed,
+        })
+    return {"dry_run": False, "backfilled": len(results), "records": results}
+
+
+@app.post("/api/recovery/rebuild")
+async def recovery_rebuild(
+    payload: RecoveryOperationRequest,
+    request: Request,
+    x_gcor_webhook_secret: Annotated[str | None, Header()] = None,
+):
+    """Reconstruct missing Postgres retrieval projections from governed MinIO bundles."""
+    verify_stack_api_secret(x_gcor_webhook_secret)
+    if payload.bucket:
+        buckets = [payload.bucket]
+    else:
+        bucket_response = await __import__("asyncio").to_thread(request.app.state.s3.list_buckets)
+        buckets = [item["Name"] for item in bucket_response.get("Buckets", [])]
+
+    candidates: list[tuple[str, str]] = []
+    for bucket in buckets:
+        keys = await __import__("asyncio").to_thread(s3_list_keys, request.app.state.s3, bucket, "bundles/", "record.json")
+        candidates.extend((bucket, key) for key in keys)
+        if len(candidates) >= payload.limit:
+            break
+    candidates = candidates[: payload.limit]
+    summary: dict[str, Any] = {"dry_run": payload.dry_run, "scanned": len(candidates), "valid": 0, "restored_documents": 0, "restored_records": 0, "knowledge_entries": 0, "quarantined_records": 0, "errors": []}
+
+    for bucket, record_key in candidates:
+        try:
+            manifest_bytes = await __import__("asyncio").to_thread(s3_get_bytes, request.app.state.s3, bucket, record_key)
+            manifest = json.loads(manifest_bytes)
+            validate_json_schema(manifest, INGESTION_RECORD_VALIDATOR, "ingestion_record")
+            source = manifest["source"]
+            scope = manifest["scope"]
+            objects = manifest["objects"]
+            original_content = await __import__("asyncio").to_thread(
+                s3_get_bytes, request.app.state.s3, bucket, objects["original_key"]
+            )
+            if hashlib.sha256(original_content).hexdigest() != source["sha256"]:
+                raise ValueError("original object checksum mismatch")
+            summary["valid"] += 1
+            if payload.dry_run:
+                continue
+
+            record_id = UUID(manifest["record_id"])
+            document_id = UUID(manifest["document_id"]) if manifest.get("document_id") else None
+            metadata = dict(manifest.get("metadata") or {}) | {
+                "bucket": bucket, "original_key": objects["original_key"],
+                "markdown_key": objects["markdown_key"], "record_key": record_key,
+            }
+            if document_id is None or manifest["status"] in {"quarantined", "failed"}:
+                result = await request.app.state.pool.execute(
+                    """INSERT INTO gcor.ingestion_records
+                       (id, document_id, content_sha256, bucket, original_key, markdown_key, record_key,
+                        channel_id, channel_name, event_id, event_kind, source_uri, status, metadata, error)
+                       VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)
+                       ON CONFLICT (id) DO NOTHING""",
+                    record_id, source["sha256"], bucket, objects["original_key"], objects["markdown_key"],
+                    record_key, scope.get("channel_id"), scope.get("channel_name"),
+                    manifest.get("event", {}).get("event_id"), manifest.get("event", {}).get("event_kind"),
+                    manifest.get("source_uri"), manifest["status"], json.dumps(metadata), manifest.get("error"),
+                )
+                if result.endswith("1"):
+                    summary["restored_records"] += 1
+                    summary["quarantined_records"] += 1
+                continue
+
+            media_type = source["media_type"]
+            recovered_session_record: dict[str, Any] | None = None
+            if metadata.get("record_type") == "chat_session" and metadata.get("session_json_key"):
+                session_bytes = await __import__("asyncio").to_thread(
+                    s3_get_bytes,
+                    request.app.state.s3,
+                    metadata.get("session_bucket") or bucket,
+                    metadata["session_json_key"],
+                )
+                recovered_session_record = validate_chat_session_record(json.loads(session_bytes))
+            try:
+                recovered_text = extract_text(original_content, media_type)
+                chunks = chunk_text(recovered_text)
+            except Exception:
+                markdown_bytes = await __import__("asyncio").to_thread(
+                    s3_get_bytes, request.app.state.s3, bucket, objects["markdown_key"]
+                )
+                recovered_text = markdown_bytes.decode("utf-8", errors="replace")
+                chunks = chunk_text(recovered_text)
+            if not chunks:
+                raise ValueError("recovery bundle has no reconstructable text")
+            vectors = await embed(chunks)
+            identity_digest = document_identity(
+                source["sha256"], scope.get("access_level", "public"), scope.get("agent_id"),
+                scope.get("channel_id"), scope.get("channel_name"),
+            )
+            async with request.app.state.pool.acquire() as connection:
+                async with connection.transaction():
+                    inserted = await connection.fetchval(
+                        """INSERT INTO gcor.documents
+                           (id, content_sha256, identity_sha256, title, source_uri, object_key, media_type,
+                            access_level, agent_id, metadata)
+                           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+                           ON CONFLICT (id) DO NOTHING RETURNING id""",
+                        document_id, source["sha256"], identity_digest, manifest.get("title") or "Recovered document",
+                        manifest.get("source_uri"), objects["original_key"], media_type,
+                        scope.get("access_level", "public"), scope.get("agent_id"), json.dumps(metadata),
+                    )
+                    if inserted:
+                        document_node_id = await connection.fetchval(
+                            """INSERT INTO gcor.nodes (document_id,node_type,label,content,access_level,agent_id)
+                               VALUES ($1,'Document',$2,$3,$4,$5) RETURNING id""",
+                            document_id, manifest.get("title") or "Recovered document", recovered_text[:1000],
+                            scope.get("access_level", "public"), scope.get("agent_id"),
+                        )
+                        for ordinal, (content_chunk, vector) in enumerate(zip(chunks, vectors)):
+                            node_id = await connection.fetchval(
+                                """INSERT INTO gcor.nodes (document_id,node_type,label,content,access_level,agent_id)
+                                   VALUES ($1,'Chunk',$2,$3,$4,$5) RETURNING id""",
+                                document_id, f"{manifest.get('title') or 'Recovered document'} #{ordinal + 1}",
+                                content_chunk, scope.get("access_level", "public"), scope.get("agent_id"),
+                            )
+                            await connection.execute(
+                                """INSERT INTO gcor.chunks (document_id,node_id,ordinal,content,token_count,embedding)
+                                   VALUES ($1,$2,$3,$4,$5,$6::vector)""",
+                                document_id, node_id, ordinal, content_chunk, len(content_chunk.split()), vector_literal(vector),
+                            )
+                            await connection.execute(
+                                "INSERT INTO gcor.edges (source_id,target_id,relation) VALUES ($1,$2,'CONTAINS')",
+                                document_node_id, node_id,
+                            )
+                        summary["restored_documents"] += 1
+                    record_result = await connection.execute(
+                        """INSERT INTO gcor.ingestion_records
+                           (id,document_id,content_sha256,bucket,original_key,markdown_key,record_key,
+                            channel_id,channel_name,event_id,event_kind,source_uri,status,metadata)
+                           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
+                           ON CONFLICT (id) DO NOTHING""",
+                        record_id, document_id, source["sha256"], bucket, objects["original_key"],
+                        objects["markdown_key"], record_key, scope.get("channel_id"), scope.get("channel_name"),
+                        manifest.get("event", {}).get("event_id"), manifest.get("event", {}).get("event_kind"),
+                        manifest.get("source_uri"), manifest["status"], json.dumps(metadata),
+                    )
+                    if record_result.endswith("1"):
+                        summary["restored_records"] += 1
+                    knowledge_session_id, created_entries = await create_session_knowledge(
+                        connection, document_id=document_id, record_id=record_id,
+                        title=manifest.get("title") or "Recovered document", content=recovered_text,
+                        media_type=media_type, access_level=scope.get("access_level", "public"),
+                        agent_id=scope.get("agent_id"), source_uri=manifest.get("source_uri"),
+                        channel_id=scope.get("channel_id"), channel_name=scope.get("channel_name"),
+                        event_id=manifest.get("event", {}).get("event_id"),
+                        event_timestamp=manifest.get("event", {}).get("event_timestamp"),
+                        author_pubkey=manifest.get("event", {}).get("author_pubkey"),
+                        file_url=source.get("file_url"), file_name=source.get("file_name"),
+                        metadata=metadata, session_record=recovered_session_record,
+                    )
+                    summary["knowledge_entries"] += created_entries
+        except Exception as error:
+            summary["errors"].append({"bucket": bucket, "record_key": record_key, "error": str(error)[:500]})
+
+    if not payload.dry_run:
+        governance_events: list[dict[str, Any]] = []
+        for bucket in buckets:
+            keys = await __import__("asyncio").to_thread(s3_list_keys, request.app.state.s3, bucket, "governance/", ".json")
+            for key in keys:
+                try:
+                    event = json.loads(await __import__("asyncio").to_thread(s3_get_bytes, request.app.state.s3, bucket, key))
+                    governance_events.append(event)
+                except Exception:
+                    continue
+        for event in sorted(governance_events, key=lambda item: item.get("occurred_at", "")):
+            try:
+                await request.app.state.pool.execute(
+                    """UPDATE gcor.documents SET metadata=metadata || $2::jsonb, updated_at=now() WHERE id=$1""",
+                    UUID(event["document_id"]), json.dumps(event.get("metadata") or {}),
+                )
+            except (ValueError, KeyError):
+                continue
+        summary["governance_events_replayed"] = len(governance_events)
+    return summary
 
 
 @app.get("/api/capabilities")

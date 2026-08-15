@@ -1,0 +1,78 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [observability]
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${OBSERVABILITY_BIND_ADDR:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      gcor-proxy:
+        condition: service_healthy
+      postgres-exporter:
+        condition: service_started
+      redis-exporter:
+        condition: service_started
+    networks: [buzz-net]
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    profiles: [observability]
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${OBSERVABILITY_BIND_ADDR:-127.0.0.1}:${GRAFANA_PORT:-3001}:3000"
+    depends_on: [prometheus]
+    networks: [buzz-net]
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    profiles: [observability]
+    restart: unless-stopped
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    volumes:
+      - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "${OBSERVABILITY_BIND_ADDR:-127.0.0.1}:${ALERTMANAGER_PORT:-9093}:9093"
+    networks: [buzz-net]
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    profiles: [observability]
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-buzz}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-buzz}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [buzz-net]
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.77.0
+    profiles: [observability]
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [buzz-net]
+
+volumes:
+  prometheus-data:
+  grafana-data:

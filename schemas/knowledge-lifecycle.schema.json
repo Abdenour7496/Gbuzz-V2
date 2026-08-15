@@ -14,7 +14,7 @@
     },
     "knowledge_transition": {
       "type": "string",
-      "enum": ["promote", "correct", "approve", "supersede", "archive", "reject"]
+      "enum": ["promote", "correct", "proposed", "approved", "superseded", "archived", "rejected"]
     },
     "knowledge_approved_by": {
       "type": "string"

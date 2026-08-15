@@ -1,8 +1,8 @@
 # buzzG
 
-buzzG adds GCOR (Graph-Centric Orchestrated Retrieval) to a local [Buzz](https://github.com/block/buzz) deployment. The stack stores documents and message-derived content in Postgres with pgvector embeddings, retains original content in MinIO, and makes retrieval available through both HTTP and MCP.
+buzzG adds a self-contained knowledge layer to a local [Buzz](https://github.com/block/buzz) deployment. Chat sessions are the primary knowledge container; people, agents, and uploaded documents are participants that contribute entries to one authoritative PostgreSQL schema. MinIO retains the original and normalized recovery artifacts, GCOR provides governed document retrieval, and [Graphiti](https://github.com/getzep/graphiti) builds the rebuildable temporal context graph through its MCP server.
 
-Docker Compose starts a local Buzz relay, Postgres with pgvector, Redis, MinIO, Ollama with `nomic-embed-text`, the GCOR proxy, and the GCOR MCP server.
+Docker Compose starts Buzz, PostgreSQL with pgvector, Redis, MinIO, Ollama, GCOR, FalkorDB, the upstream Graphiti MCP server, and a small PostgreSQL-to-MCP projector.
 
 ## What Runs Where
 
@@ -13,6 +13,7 @@ Docker Compose starts a local Buzz relay, Postgres with pgvector, Redis, MinIO, 
 | GCOR proxy | `http://127.0.0.1:5001` | HTTP ingestion, retrieval, collection, health, and metrics API. |
 | GCOR health | `http://127.0.0.1:5001/health` | GCOR proxy health check. |
 | GCOR MCP SSE | `http://127.0.0.1:8765/sse` | MCP endpoint for local MCP clients. |
+| Graphiti MCP HTTP | `http://127.0.0.1:8000/mcp/` | Temporal entity, relationship, episode, and graph-search tools. |
 | MinIO API | `http://127.0.0.1:9000` | S3-compatible object API. |
 | MinIO console | `http://127.0.0.1:9001` | MinIO administration console. |
 
@@ -20,7 +21,13 @@ Buzz Desktop is the human-facing client. The relay does not expose the Buzz app 
 
 GCOR is not a Buzz channel bot. It is an ingestion/retrieval service. A Buzz agent can use it through MCP, or a Buzz workflow can send channel content to it automatically.
 
-GCOR keeps the retrieval and graph workload Postgres-native: `pgvector` HNSW provides vector candidates, a GIN `tsvector` index provides full-text candidates, and a recursive SQL CTE expands graph relationships. Ingestion also extracts conservative proper-name and quoted Concept labels, then connects each matching Chunk to a shared Concept node with an `ABOUT` edge.
+Component ownership is intentionally non-overlapping:
+
+- PostgreSQL is authoritative for sessions, participants, normalized entries, document metadata, governance state, chunks, and projection status.
+- MinIO is authoritative for original bytes plus Markdown and JSON recovery bundles.
+- GCOR owns ingestion, governance, vector/full-text document retrieval, citations, and recovery.
+- Graphiti owns entity extraction, relationship inference, temporal fact invalidation, episode provenance, and context-graph search.
+- FalkorDB stores only Graphiti's rebuildable projection. Deleting it does not delete authoritative knowledge.
 
 ## Prerequisites
 
@@ -62,7 +69,7 @@ GCOR keeps the retrieval and graph workload Postgres-native: `pgvector` HNSW pro
    docker compose -f docker-compose.yml -f docker-compose.stack-only.yml up -d --build
    ```
 
-   On the first run, Ollama downloads `nomic-embed-text`. The GCOR proxy waits for that download, MinIO initialization, and the database migration, so the first startup can take several minutes.
+   On the first run, Ollama downloads `nomic-embed-text`, the normal generation model, and the Graphiti extraction model (`qwen2.5:7b` by default). Graphiti is built from the pinned upstream `v0.29.3` source. The first build and model download can take several minutes.
 
 4. Check the service state:
 
@@ -72,9 +79,72 @@ GCOR keeps the retrieval and graph workload Postgres-native: `pgvector` HNSW pro
    curl.exe http://127.0.0.1:5001/health
    ```
 
-   `gcor-migrate`, `minio-init`, and `ollama-init` are one-shot setup services and should show `Exited (0)`. The relay, PostgreSQL, Redis, MinIO, Ollama, GCOR proxy, and MCP server should be running.
+   `gcor-migrate`, `minio-init`, and `ollama-init` are one-shot setup services and should show `Exited (0)`. The relay, PostgreSQL, Redis, MinIO, Ollama, GCOR, FalkorDB, Graphiti MCP, and both projectors should be running.
 
    In stack-only mode, `docker compose ps` should show no published host ports for `gcor-proxy` and `mcp-postgres-gcor`.
+
+## Run Verification
+
+Unit tests and rendered Compose validation run on every pull request. The CI
+integration gate starts an isolated PostgreSQL, MinIO, GCOR, and deterministic
+mock-inference stack, then verifies ingestion, deduplication, retrieval, and
+immutable recovery records:
+
+```powershell
+docker compose -f docker-compose.integration.yml up --build --abort-on-container-exit --exit-code-from smoke smoke
+docker compose -f docker-compose.integration.yml down --volumes --remove-orphans
+```
+
+The integration stack uses port `15001`, isolated ephemeral storage, and no API
+keys or downloaded language models.
+
+## Observe The Stack
+
+The observability settings live in `.env`. Before first use, replace
+`GRAFANA_ADMIN_PASSWORD`; `GRAFANA_ADMIN_USER` defaults to `admin`. Start or
+update the application and monitoring containers together with:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.observability.yml --profile observability up -d --build
+```
+
+The profile creates Grafana, Prometheus, Alertmanager, PostgreSQL exporter, and
+Redis exporter containers. Grafana is available at `http://127.0.0.1:3001` and
+uses the credentials from `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD`.
+Prometheus is at `http://127.0.0.1:9090`, and Alertmanager is at
+`http://127.0.0.1:9093`.
+
+Confirm the containers and Prometheus scrape targets after startup:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.observability.yml --profile observability ps
+```
+
+The provisioned Gbuzz dashboard covers target health, ingestion activity,
+attachment failures, PostgreSQL connections, and Redis memory. Metrics and
+dashboard state persist in named volumes across container recreation. Configure
+a deployment-specific Alertmanager receiver before relying on notifications.
+
+## Prepare A Reproducible Release
+
+CI scans the repository for vulnerable dependencies and leaked secrets and
+publishes an SPDX JSON SBOM artifact. For production, copy
+`docker-compose.production.lock.example.yml` to the gitignored
+`docker-compose.production.lock.yml`, replace every placeholder with an image
+digest or commit-addressed Gbuzz image tag, and verify it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/verify-production-pins.ps1
+```
+
+To produce reviewable, hash-locked Python dependency files:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/update-python-locks.ps1
+```
+
+Review and commit generated lock files before changing Docker builds to consume
+them with pip's `--require-hashes` option.
 
 ## Connect Buzz Clients And Agents
 
@@ -195,9 +265,57 @@ curl.exe -X POST http://127.0.0.1:5001/api/ingest `
    -F "access_level=public"
 ```
 
-Successful ingestion returns `document_id`, chunk count, the target `bucket`, and `object_key`. Re-ingesting identical content returns `deduplicated: true` rather than creating duplicate chunks.
+Successful ingestion returns `document_id`, `record_id`, chunk count, the target `bucket`, and the keys for an immutable recovery bundle. Every message, uploaded file, attachment, curated item, and session now creates:
+
+- `bundles/YYYY/MM/DD/<record-id>/original/<file>` containing the unchanged source bytes.
+- `bundles/YYYY/MM/DD/<record-id>/content.md` containing normalized text and provenance front matter.
+- `bundles/YYYY/MM/DD/<record-id>/record.json` containing schema-versioned lineage, checksums, scope, event metadata, and all object pointers.
+
+Re-ingesting identical content in the same channel and access scope returns `deduplicated: true` rather than creating duplicate chunks, while retaining a separate immutable ingestion record. Identical content in another channel or access scope is deliberately isolated as a separate document identity.
 
 When attachment replay is triggered, the response also includes `attachments_ingested` with per-URL status.
+
+Knowledge approval and lifecycle changes also append immutable JSON events below `governance/<document-id>/events/` in the document's bucket. PostgreSQL remains the retrieval projection; the MinIO bundles retain the source and governance material required to audit or reconstruct it.
+
+List recent recovery records through `GET /api/recovery/records`, or run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/gcor-recovery-audit.ps1
+```
+
+The audit output provides the original, Markdown, and JSON keys for each ingestion occurrence. Back up both the MinIO and PostgreSQL volumes; recovery bundles make the index reconstructable but do not replace infrastructure-level backups or retention policies.
+
+Files are archived before extraction. If parsing or embedding fails, the API returns `quarantined: true` and still retains the original bytes, a diagnostic Markdown envelope, and a JSON record with the failure. Quarantined records can be reprocessed after an extractor is added without asking the user to upload the source again.
+
+MinIO versioning is enabled automatically for GCOR-created buckets and the Buzz media bucket. Bundle and governance keys are unique and append-oriented, so an accidental overwrite or deletion remains recoverable through object versions.
+
+### Legacy Backfill and Disaster Recovery
+
+Preview and then apply bundle backfill for documents indexed before governed bundles were introduced:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/gcor-backfill.ps1
+powershell -ExecutionPolicy Bypass -File scripts/gcor-backfill.ps1 -Apply
+```
+
+Validate all MinIO manifests, or reconstruct missing Postgres documents, chunks, embeddings, graph edges, ingestion occurrences, quarantined records, and governance metadata:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/gcor-restore.ps1
+powershell -ExecutionPolicy Bypass -File scripts/gcor-restore.ps1 -Apply
+```
+
+The restore operation is additive and idempotent; it does not delete existing rows. For a full disaster-recovery test, point a temporary GCOR proxy at an empty migrated database and run the command with `-Apply`.
+
+### Automatic Buzz Capture
+
+The `gcor-event-projector` service starts with the stack and reads the relay's signed, append-only event table without modifying it. It automatically captures message kinds `9`, `40002`, `45001`, and `45003`, derives channel visibility and author identity from trusted relay data, downloads `imeta` attachments through the internal relay address, and records durable processing checkpoints in `gcor.event_projection`.
+
+This replaces the need to install the example workflow for standard message and file capture. The workflow template remains available for deployments that prefer explicit workflow routing. Configure projector behavior with `PROJECTOR_EVENT_KINDS`, `PROJECTOR_POLL_SECONDS`, and `PROJECTOR_BATCH_SIZE`.
+
+### Local Grounded Generation
+
+`/api/ask` and `/api/ask/reply` use the local `GENERATION_MODEL` through Ollama to synthesize an evidence-only answer with inline numbered citations. If generation is unavailable, the endpoints retain their previous ranked-excerpt response, preserving API availability and compatibility. The default local model is `qwen2.5:1.5b`.
 
 Attachment replay uses retry with exponential backoff and timeout controls:
 
@@ -240,6 +358,29 @@ curl.exe -X POST http://127.0.0.1:5001/api/retrieve `
 ```
 
 `top_k` controls how many results are returned. `hops` controls graph expansion from matching chunks; use `0` for search only. Results contain `chunks`, `graph_nodes`, and a `reflection` value of `graph`, `chunks`, or `empty`. Each returned chunk includes `vector_score`, `lexical_score`, and the combined `score`.
+
+Every successful ingestion also writes to `gcor.knowledge_sessions`, `gcor.knowledge_participants`, and `gcor.knowledge_entries`. Messages become user or agent contributions. Uploaded files become `document` participants; each document chunk is a bounded, provenance-bearing contribution to the same session. `gcor.graphiti_projection` records delivery state and reconciles Graphiti's minted episode UUID back to the authoritative entry after background processing.
+
+The Graphiti projector sends the common JSON schema in `schemas/session-knowledge-entry.schema.json` through the upstream MCP `add_memory` tool. It probes the live tool schema, supplies `reference_time`, groups episodes by session, and uses `get_episodes` to reconcile generated identifiers. It allows one globally in-flight extraction at a time because Graphiti only serializes work inside each group; this prevents many sessions from overwhelming limited local hardware. Accepted work that never becomes queryable is retried after `GRAPHITI_PROJECTOR_SUBMISSION_TIMEOUT_MINUTES`, up to the configured attempt limit. Query Graphiti directly through tools such as `search_nodes`, `search_memory_facts`, `get_episodes`, and `get_episode_entities`.
+
+Inspect delivery state independently of core service health:
+
+```powershell
+curl.exe -H "X-Gcor-Webhook-Secret: $stackSecret" http://127.0.0.1:5001/api/graphiti/status
+```
+
+`in_flight` should never exceed one. `dead_letter` must be zero before a production release; failed entries remain in PostgreSQL and can be safely replayed because FalkorDB is a derived projection.
+
+### Production Graphiti inference
+
+Local Compose remains fully self-contained and uses Ollama. On hardware that cannot run reliable temporal extraction, use the production override to send Graphiti LLM and embedding requests to OpenAI while retaining PostgreSQL, pgvector, MinIO, Graphiti MCP, and FalkorDB locally:
+
+```powershell
+$env:OPENAI_API_KEY = "..."
+docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --build
+```
+
+The production default embedding model is `text-embedding-3-small` with 1536 dimensions. The API key is required at Compose interpolation time and must not be committed. Local and production Graphiti embeddings have different dimensions; after a mode change, rebuild the FalkorDB Graphiti projection from authoritative PostgreSQL rather than mixing vectors in one graph. This override changes Graphiti inference only; GCOR's PostgreSQL `pgvector` index retains its independently configured embedding model and dimension.
 
 Retrieval uses normalized weights of `0.75` for vector similarity and `0.25` for full-text rank by default. Override them per request when a query requires more exact-keyword matching:
 
@@ -397,6 +538,8 @@ The MCP server exposes these core tools:
 - `graph_expand` performs retrieval plus bounded graph expansion.
 - `ask_knowledge` returns grounded answers and citations from GCOR.
 - `ask_knowledge_reply` returns a posting-friendly reply envelope for chat workflows.
+- `list_knowledge_sessions` lists the authoritative session containers and projection counts.
+- `get_knowledge_session` returns one session with its user, agent, system, and document participants and ordered entries.
 - `promote_knowledge` stores curated channel knowledge as durable memory.
 - `correct_knowledge` records corrections linked to existing knowledge targets.
 - `approve_knowledge` marks proposed knowledge as approved for default ask visibility.
@@ -409,6 +552,14 @@ For a local desktop MCP client, register this SSE endpoint:
 ```text
 http://127.0.0.1:8765/sse
 ```
+
+Register Graphiti independently using streamable HTTP:
+
+```text
+http://127.0.0.1:8000/mcp/
+```
+
+Agents should use GCOR MCP for governed ingestion, lifecycle operations, document retrieval, and citations. They should use Graphiti MCP for temporal facts, entity relationships, episode history, and graph-native context queries.
 
 The repository includes the corresponding VS Code MCP configuration in [.vscode/mcp.json](.vscode/mcp.json). From an agent running inside the Docker Compose network, use `http://mcp-postgres-gcor:8765/sse` instead.
 

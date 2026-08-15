@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: integration
+      POSTGRES_USER: integration
+      POSTGRES_PASSWORD: integration
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U integration -d integration"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [integration]
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: integration
+      MINIO_ROOT_PASSWORD: integration-secret
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [integration]
+
+  migrate:
+    image: pgvector/pgvector:pg17
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: integration
+      PGPASSWORD: integration
+      PGDATABASE: integration
+      EMBEDDING_DIMS: "8"
+    volumes:
+      - ./migrations:/migrations:ro
+    command: ["/bin/sh", "-ec", "for migration in /migrations/*.sql; do sed \"s/__EMBEDDING_DIMS__/$${EMBEDDING_DIMS}/g\" \"$${migration}\" | psql -v ON_ERROR_STOP=1; done"]
+    networks: [integration]
+
+  mock-ollama:
+    build:
+      context: .
+      dockerfile: tests/integration/mock-ollama.Dockerfile
+    networks: [integration]
+
+  gcor-proxy:
+    build:
+      context: .
+      dockerfile: proxy/Dockerfile
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      mock-ollama:
+        condition: service_started
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: integration
+      POSTGRES_PASSWORD: integration
+      POSTGRES_DB: integration
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: integration
+      MINIO_ROOT_PASSWORD: integration-secret
+      MINIO_BUCKET: integration
+      EMBEDDING_BACKEND: ollama
+      EMBEDDING_MODEL: integration
+      OLLAMA_HOST: http://mock-ollama:11434
+      INGEST_WEBHOOK_SECRET: integration-secret
+      STACK_API_SECRET: integration-secret
+      ENFORCE_STACK_API_SECRET: "true"
+      SCHEMAS_DIR: /app/schemas
+    ports:
+      - "127.0.0.1:15001:5001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/health')"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [integration]
+
+  smoke:
+    image: python:3.12-slim
+    depends_on:
+      gcor-proxy:
+        condition: service_healthy
+    environment:
+      GCOR_URL: http://gcor-proxy:5001
+      STACK_API_SECRET: integration-secret
+    volumes:
+      - ./tests/integration:/tests:ro
+    command: ["python", "/tests/smoke.py"]
+    networks: [integration]
+
+networks:
+  integration:
