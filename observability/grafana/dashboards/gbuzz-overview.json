@@ -2,11 +2,13 @@
   "annotations": {"list": []},
   "editable": false,
   "panels": [
-    {"type": "stat", "title": "Healthy targets", "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4}, "targets": [{"expr": "sum(up{job=~\"gcor|buzz-relay|postgres|redis\"})", "refId": "A"}]},
+    {"type": "stat", "title": "Healthy targets", "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4}, "targets": [{"expr": "sum(up{job=~\"gcor|buzz-relay|postgres|redis|recovery-controller\"})", "refId": "A"}]},
     {"type": "timeseries", "title": "GCOR ingestion rate", "gridPos": {"x": 6, "y": 0, "w": 9, "h": 8}, "targets": [{"expr": "rate(gcor_ingest_total[5m])", "legendFormat": "ingest/s", "refId": "A"}]},
     {"type": "timeseries", "title": "Attachment replay failures", "gridPos": {"x": 15, "y": 0, "w": 9, "h": 8}, "targets": [{"expr": "increase(gcor_attachment_replay_failures_total[15m])", "legendFormat": "failures", "refId": "A"}]},
     {"type": "timeseries", "title": "PostgreSQL connections", "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}, "targets": [{"expr": "sum(pg_stat_activity_count)", "legendFormat": "connections", "refId": "A"}]},
-    {"type": "timeseries", "title": "Redis memory", "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8}, "targets": [{"expr": "redis_memory_used_bytes", "legendFormat": "used", "refId": "A"}, {"expr": "redis_memory_max_bytes", "legendFormat": "limit", "refId": "B"}]}
+    {"type": "timeseries", "title": "Redis memory", "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8}, "targets": [{"expr": "redis_memory_used_bytes", "legendFormat": "used", "refId": "A"}, {"expr": "redis_memory_max_bytes", "legendFormat": "limit", "refId": "B"}]},
+    {"type": "stat", "title": "Managed service health", "gridPos": {"x": 0, "y": 16, "w": 12, "h": 6}, "targets": [{"expr": "gbuzz_recovery_service_healthy", "legendFormat": "{{service}}", "refId": "A"}]},
+    {"type": "timeseries", "title": "Automated recovery actions", "gridPos": {"x": 12, "y": 16, "w": 12, "h": 6}, "targets": [{"expr": "increase(gbuzz_recovery_actions_total[1h])", "legendFormat": "{{service}} {{result}}", "refId": "A"}]}
   ],
   "schemaVersion": 41,
   "tags": ["gbuzz"],

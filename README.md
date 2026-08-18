@@ -91,12 +91,15 @@ mock-inference stack, then verifies ingestion, deduplication, retrieval, and
 immutable recovery records:
 
 ```powershell
-docker compose -f docker-compose.integration.yml up --build --abort-on-container-exit --exit-code-from smoke smoke
-docker compose -f docker-compose.integration.yml down --volumes --remove-orphans
+docker compose -p gbuzz-integration -f docker-compose.integration.yml up --build --abort-on-container-exit --exit-code-from smoke smoke
+docker compose -p gbuzz-integration -f docker-compose.integration.yml down --volumes --remove-orphans
 ```
 
 The integration stack uses port `15001`, isolated ephemeral storage, and no API
-keys or downloaded language models.
+keys or downloaded language models. Keep the explicit `gbuzz-integration`
+project name: it prevents the test services from colliding with a running Gbuzz
+stack in the same directory. The Compose file also declares this name as a
+second safeguard.
 
 ## Observe The Stack
 
@@ -121,9 +124,89 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml --profi
 ```
 
 The provisioned Gbuzz dashboard covers target health, ingestion activity,
-attachment failures, PostgreSQL connections, and Redis memory. Metrics and
-dashboard state persist in named volumes across container recreation. Configure
-a deployment-specific Alertmanager receiver before relying on notifications.
+attachment failures, PostgreSQL connections, Redis memory, managed service
+health, and automated recovery actions. Metrics and dashboard state persist in
+named volumes across container recreation. Configure a deployment-specific
+Alertmanager receiver before relying on notifications.
+
+## Built-in Health Monitoring And Recovery
+
+The default stack includes an independent `recovery-controller`. It polls the
+Docker health state of explicitly labelled Gbuzz containers and exposes:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `http://127.0.0.1:8082/health` | Controller and Docker inspection readiness. |
+| `http://127.0.0.1:8082/api/status` | Read-only per-service health, policy, and last-action status. |
+| `http://127.0.0.1:8082/metrics` | Prometheus recovery and service-health metrics. |
+
+After three consecutive unhealthy observations, the controller may restart the
+relay and stateless GCOR, MCP, and projector services. PostgreSQL, Redis, MinIO,
+Ollama, and FalkorDB are deliberately monitor-only. A five-minute per-service
+cooldown and a default budget of three recovery actions per hour prevent restart
+loops. Successful and failed decisions are appended to the persistent
+`recovery-audit-data` volume, and the recent budget is restored after controller
+restarts.
+
+Inspect the current decision state with:
+
+```powershell
+curl.exe http://127.0.0.1:8082/api/status
+docker compose exec recovery-controller tail -n 50 /var/lib/gbuzz-recovery/audit.jsonl
+```
+
+The controller mounts the Docker Engine socket, which is a privileged control
+surface even when the filesystem mount is read-only. It has no mutation API or
+general command runner: remediation is limited to immutable Compose labels. Do
+not expose the controller publicly. For higher-assurance deployments, place a
+restricted Docker socket proxy between the controller and the engine.
+
+The GCOR MCP bridge exposes the same read-only assessment as
+`get_stack_health`, allowing the Buzz SRE agent to inspect service state,
+consecutive failures, recovery policy, and last actions without Docker or shell
+access. Automated actions still come exclusively from the bounded controller.
+
+## Automatic Stack Updates
+
+Automatic updates are opt-in. The host-side updater pulls every configured
+remote image tag, rebuilds all workspace-owned images with refreshed base
+images, recreates the Compose stack in dependency order, and waits for every
+long-running service to pass its health check. A named mutex prevents overlapping
+runs, and results are appended to `backups/stack-update-audit.jsonl`.
+
+Enable the scheduled updater in `.env`:
+
+```env
+AUTO_UPDATE_ENABLED=true
+AUTO_UPDATE_INCLUDE_OBSERVABILITY=false
+AUTO_UPDATE_WAIT_TIMEOUT_SECONDS=300
+```
+
+Test one update interactively before scheduling it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/update-stack.ps1 -Force
+```
+
+Install the Windows scheduled task (daily at 04:00 by default):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-auto-update-task.ps1
+```
+
+Choose another maintenance-window time or remove the task with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-auto-update-task.ps1 -DailyAt "02:30"
+powershell -ExecutionPolicy Bypass -File scripts/install-auto-update-task.ps1 -Uninstall
+```
+
+The updater refreshes the image references already configured in Compose. A
+fixed version or digest remains fixed; it is never silently rewritten to a new
+release. This preserves the production lock-file contract. Review and update
+version pins separately when adopting a new major or minor release. Stateful
+data volumes are retained, but infrastructure backups should still run before
+the maintenance window.
 
 ## Prepare A Reproducible Release
 
@@ -143,8 +226,9 @@ To produce reviewable, hash-locked Python dependency files:
 powershell -ExecutionPolicy Bypass -File scripts/update-python-locks.ps1
 ```
 
-Review and commit generated lock files before changing Docker builds to consume
-them with pip's `--require-hashes` option.
+Review and commit the generated lock files. Application Docker builds and CI
+install from them with pip's `--require-hashes` option; `requirements.txt`
+remains the human-maintained dependency input.
 
 ## Connect Buzz Clients And Agents
 
@@ -370,6 +454,20 @@ curl.exe -H "X-Gcor-Webhook-Secret: $stackSecret" http://127.0.0.1:5001/api/grap
 ```
 
 `in_flight` should never exceed one. `dead_letter` must be zero before a production release; failed entries remain in PostgreSQL and can be safely replayed because FalkorDB is a derived projection.
+
+Inspect the four release-blocking backlog classes and fail closed unless all are zero:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/graphiti-projection-release-gate.ps1
+```
+
+For historical failures, reconcile already-created Graphiti episodes first and requeue at most ten projection records in one operator action (exhausted rows have their projection-attempt budget reset):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/graphiti-projection-replay.ps1 -Limit 10
+```
+
+The replay command only updates `gcor.graphiti_projection`; it never changes authoritative sessions, participants, entries, documents, ingestion records, or recovery objects. Repeat bounded batches while observing the projector, then rerun the release gate.
 
 ### Production Graphiti inference
 

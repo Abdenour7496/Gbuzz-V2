@@ -1,3 +1,5 @@
+name: gbuzz-integration
+
 services:
   postgres:
     image: pgvector/pgvector:pg17

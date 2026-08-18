@@ -1,8 +1,8 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-COPY projector/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY projector/requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY projector/main.py .
 COPY projector/test_main.py .
 

@@ -9,8 +9,18 @@ from mcp.server.fastmcp import FastMCP
 PROXY_URL = os.getenv("GCOR_PROXY_URL", "http://gcor-proxy:5001").rstrip("/")
 WEBHOOK_SECRET = os.getenv("INGEST_WEBHOOK_SECRET", "")
 STACK_API_SECRET = os.getenv("STACK_API_SECRET", "") or WEBHOOK_SECRET
+RECOVERY_CONTROLLER_URL = os.getenv("RECOVERY_CONTROLLER_URL", "http://recovery-controller:8080").rstrip("/")
 
 mcp = FastMCP("mcp-postgres-gcor")
+
+
+@mcp.tool()
+async def get_stack_health() -> dict[str, Any]:
+    """Read the built-in controller's current stack health and bounded recovery state."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.get(f"{RECOVERY_CONTROLLER_URL}/api/status")
+        response.raise_for_status()
+        return response.json()
 
 
 async def proxy_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:

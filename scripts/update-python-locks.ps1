@@ -10,7 +10,7 @@ foreach ($component in $components) {
         --volume "${workspace}:/workspace" `
         --workdir "/workspace/$component" `
         python:3.12-slim `
-        sh -ec "python -m pip install --disable-pip-version-check pip-tools==7.5.0 && pip-compile --generate-hashes --resolver=backtracking --output-file=requirements.lock requirements.txt"
+        sh -ec "python -m pip install --disable-pip-version-check --quiet pip-tools==7.5.0 && pip-compile --quiet --strip-extras --generate-hashes --resolver=backtracking --output-file=requirements.lock requirements.txt"
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to lock dependencies for $component"
     }

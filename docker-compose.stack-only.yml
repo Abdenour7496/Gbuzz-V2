@@ -7,3 +7,6 @@ services:
 
   graphiti-mcp:
     ports: !reset []
+
+  recovery-controller:
+    ports: !reset []

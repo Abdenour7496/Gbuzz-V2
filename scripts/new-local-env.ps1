@@ -1,23 +1,50 @@
 param(
-    [switch]$Force
+    [switch]$Force,
+    [switch]$EnsureStackApiSecret
 )
 
 $envFile = Join-Path $PSScriptRoot "..\.env"
+if ($EnsureStackApiSecret) {
+    if (-not (Test-Path -LiteralPath $envFile)) {
+        throw ".env does not exist. Run this script without -EnsureStackApiSecret to create it."
+    }
+    $lines = @(Get-Content -LiteralPath $envFile)
+    $existingIndex = -1
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index] -match '^STACK_API_SECRET=') { $existingIndex = $index; break }
+    }
+    if ($existingIndex -ge 0 -and -not [string]::IsNullOrWhiteSpace(($lines[$existingIndex] -split '=', 2)[1])) {
+        Write-Output "STACK_API_SECRET is already configured in $envFile"
+        exit 0
+    }
+    $bytes = New-Object byte[] 32
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    $value = ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+    if ($existingIndex -ge 0) { $lines[$existingIndex] = "STACK_API_SECRET=$value" }
+    else { $lines += "STACK_API_SECRET=$value" }
+    Set-Content -LiteralPath $envFile -Value $lines -Encoding ascii
+    Write-Output "Configured a generated STACK_API_SECRET in $envFile"
+    exit 0
+}
+
 if ((Test-Path $envFile) -and -not $Force) {
     throw ".env already exists. Use -Force only when you intend to replace its stable secrets."
 }
 
 $hexSecret = {
     param([int]$ByteCount)
-    $bytes = [byte[]]::new($ByteCount)
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-    [Convert]::ToHexString($bytes).ToLowerInvariant()
+    $bytes = New-Object byte[] $ByteCount
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
 }
 
 $base64Secret = {
     param([int]$ByteCount)
-    $bytes = [byte[]]::new($ByteCount)
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    $bytes = New-Object byte[] $ByteCount
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
     [Convert]::ToBase64String($bytes).Replace('+', 'A').Replace('/', 'B').Replace('=', '')
 }
 
@@ -31,7 +58,7 @@ $s3SecretKey = & $base64Secret 32
 
 $content = @"
 # Generated for a local Buzz + GCOR deployment. Keep this file private and stable.
-BUZZ_IMAGE=ghcr.io/block/buzz:main
+BUZZ_IMAGE=ghcr.io/block/buzz:0.2.1
 BUZZ_HTTP_PORT=3000
 MINIO_API_PORT=9000
 MINIO_CONSOLE_PORT=9001

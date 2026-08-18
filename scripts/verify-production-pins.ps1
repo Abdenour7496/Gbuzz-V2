@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$ComposeFile = "docker-compose.production.lock.yml"
+    [string]$ComposeFile = "docker-compose.production.lock.yml",
+    [bool]$IncludeObservability = $true,
+    [switch]$RequireRegistry
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,7 +11,13 @@ if (-not (Test-Path -LiteralPath $ComposeFile)) {
     throw "Missing $ComposeFile. Copy docker-compose.production.lock.example.yml and replace every sha256 placeholder."
 }
 
-$images = @(docker compose -f docker-compose.yml -f $ComposeFile config --images)
+$composeFiles = @("-f", "docker-compose.yml")
+if ($IncludeObservability) {
+    $composeFiles += @("-f", "docker-compose.observability.yml")
+    $composeFiles += @("--profile", "observability")
+}
+$composeFiles += @("-f", $ComposeFile)
+$images = @(docker compose @composeFiles config --images)
 if ($LASTEXITCODE -ne 0) {
     throw "Docker Compose could not render the production configuration."
 }
@@ -19,6 +27,13 @@ $invalid = @($images | Where-Object {
 })
 if ($invalid.Count -gt 0) {
     throw "Production images must use a sha256 digest or a commit-addressed Gbuzz tag:`n$($invalid -join "`n")"
+}
+
+if ($RequireRegistry) {
+    $localImages = @($images | Where-Object { $_ -match '^gbuzz-[a-z0-9-]+@sha256:' -or $_ -match '^gbuzz-[a-z0-9-]+:' })
+    if ($localImages.Count -gt 0) {
+        throw "Production application images must be published to a registry, not referenced by local names:`n$($localImages -join "`n")"
+    }
 }
 
 Write-Host "Verified $($images.Count) immutable production image references."

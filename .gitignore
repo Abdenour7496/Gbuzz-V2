@@ -2,3 +2,9 @@
 __pycache__/
 *.py[cod]
 docker-compose.production.lock.yml
+backups/
+*.dump
+*.zip
+*.sql
+release-evidence-*.md
+observability/alertmanager.production.yml

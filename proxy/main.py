@@ -22,7 +22,7 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.responses import Response
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
@@ -71,6 +71,10 @@ ATTACHMENT_REPLAY_FAILURES = Counter("gcor_attachment_replay_failures_total", "A
 ATTACHMENT_REPLAY_TIMEOUTS = Counter("gcor_attachment_replay_timeouts_total", "Attachment replay timeouts")
 ATTACHMENT_FETCH_DURATION = Histogram("gcor_attachment_fetch_duration_seconds", "Attachment fetch duration")
 REMOTE_FETCH_BLOCKED = Counter("gcor_remote_fetch_blocked_total", "Remote URL fetch requests rejected by policy", ["reason"])
+HTTP_REQUESTS = Counter("gcor_http_requests_total", "GCOR HTTP responses", ["method", "status"])
+HTTP_REQUEST_DURATION = Histogram("gcor_http_request_duration_seconds", "GCOR HTTP request duration", ["method"])
+GRAPHITI_PROJECTION = Gauge("gcor_graphiti_projection_entries", "Graphiti projection entries by status", ["status"])
+GRAPHITI_OLDEST_UNFINISHED = Gauge("gcor_graphiti_oldest_unfinished_seconds", "Age of the oldest unfinished Graphiti projection entry")
 
 
 def load_schema(path: Path, schema_name: str) -> dict[str, Any]:
@@ -1036,6 +1040,21 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="gcor-proxy", version="0.1.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def record_http_metrics(request: Request, call_next):
+    if request.url.path == "/metrics":
+        return await call_next(request)
+    started = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        HTTP_REQUESTS.labels(method=request.method, status=str(status)).inc()
+        HTTP_REQUEST_DURATION.labels(method=request.method).observe(time.perf_counter() - started)
 
 
 def verify_webhook(secret: str | None) -> None:
@@ -2746,5 +2765,24 @@ async def health(request: Request):
 
 
 @app.get("/metrics")
-async def metrics():
+async def metrics(request: Request):
+    row = await request.app.state.pool.fetchrow(
+        """
+        SELECT count(*) FILTER (WHERE status='pending') AS pending,
+               count(*) FILTER (WHERE status='processing') AS processing,
+               count(*) FILTER (WHERE status='submitted' AND reconciled_at IS NULL) AS in_flight,
+               count(*) FILTER (WHERE status='failed' AND attempts >= $1) AS dead_letter,
+               EXTRACT(EPOCH FROM (
+                   now() - min(created_at) FILTER (
+                       WHERE status IN ('pending','processing','failed')
+                          OR (status='submitted' AND reconciled_at IS NULL)
+                   )
+               )) AS oldest_unfinished_seconds
+        FROM gcor.graphiti_projection
+        """,
+        int(os.getenv("GRAPHITI_PROJECTOR_MAX_ATTEMPTS", "8")),
+    )
+    for status in ("pending", "processing", "in_flight", "dead_letter"):
+        GRAPHITI_PROJECTION.labels(status=status).set(int(row[status] or 0))
+    GRAPHITI_OLDEST_UNFINISHED.set(float(row["oldest_unfinished_seconds"] or 0))
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

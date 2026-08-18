@@ -57,6 +57,25 @@ class GraphitiProjectorTest(unittest.TestCase):
         self.assertEqual("get_episodes", name)
         self.assertEqual({"group_ids"}, accepted)
 
+    def test_unwraps_graphiti_structured_result(self):
+        result = SimpleNamespace(
+            structuredContent={"result": {"episodes": [{"uuid": "episode-1"}]}},
+            content=[],
+        )
+        self.assertEqual(
+            [{"uuid": "episode-1"}],
+            main.tool_result_object(result)["episodes"],
+        )
+
+    def test_release_gate_projection_buckets(self):
+        self.assertEqual("pending", main.projection_bucket("pending", 0, False, 8))
+        self.assertEqual("retryable", main.projection_bucket("failed", 7, False, 8))
+        self.assertEqual("dead_letter", main.projection_bucket("failed", 8, False, 8))
+        self.assertEqual("in_flight", main.projection_bucket("processing", 1, False, 8))
+        self.assertEqual("in_flight", main.projection_bucket("submitted", 1, False, 8))
+        self.assertIsNone(main.projection_bucket("submitted", 1, True, 8))
+        self.assertIsNone(main.projection_bucket("skipped", 0, False, 8))
+
 
 if __name__ == "__main__":
     unittest.main()

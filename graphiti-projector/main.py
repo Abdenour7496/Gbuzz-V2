@@ -25,6 +25,19 @@ PROCESSING_TIMEOUT_MINUTES = int(os.getenv("GRAPHITI_PROJECTOR_PROCESSING_TIMEOU
 SUBMISSION_TIMEOUT_MINUTES = int(os.getenv("GRAPHITI_PROJECTOR_SUBMISSION_TIMEOUT_MINUTES", "45"))
 
 
+def projection_bucket(status: str, attempts: int, reconciled: bool, max_attempts: int = MAX_ATTEMPTS) -> str | None:
+    """Return the release-gate bucket for an unfinished projection row."""
+    if status == "pending":
+        return "pending"
+    if status == "processing":
+        return "dead_letter" if attempts >= max_attempts else "in_flight"
+    if status == "submitted" and not reconciled:
+        return "in_flight"
+    if status == "failed":
+        return "dead_letter" if attempts >= max_attempts else "retryable"
+    return None
+
+
 def json_object(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -132,8 +145,11 @@ def build_tool_arguments(row: dict[str, Any], accepted: set[str]) -> dict[str, A
 
 def tool_result_object(result: Any) -> dict[str, Any]:
     structured = getattr(result, "structuredContent", None)
+    if structured is None:
+        structured = getattr(result, "structured_content", None)
     if isinstance(structured, dict):
-        return structured
+        nested = structured.get("result")
+        return nested if isinstance(nested, dict) else structured
     for item in getattr(result, "content", []):
         value = getattr(item, "text", None)
         if not value:
@@ -153,14 +169,21 @@ async def reconcile_episodes(
     tool_name: str,
     accepted: set[str],
 ) -> int:
-    group_id = await pool.fetchval(
-        """SELECT group_id FROM gcor.graphiti_projection
-           WHERE operation='add' AND status='submitted' AND reconciled_at IS NULL
-           ORDER BY submitted_at NULLS LAST LIMIT 1"""
+    groups = await pool.fetch(
+        """SELECT group_id,min(coalesce(submitted_at,updated_at)) AS first_seen
+           FROM gcor.graphiti_projection
+           WHERE operation='add' AND status IN ('submitted','failed','processing')
+             AND reconciled_at IS NULL
+           GROUP BY group_id
+           ORDER BY first_seen
+           LIMIT 100"""
     )
-    if not group_id:
+    if not groups:
         return 0
-    candidates = {"group_ids": [group_id], "max_episodes": 1000}
+    candidates = {
+        "group_ids": [group["group_id"] for group in groups],
+        "max_episodes": 1000,
+    }
     result = await session.call_tool(
         tool_name, {key: value for key, value in candidates.items() if key in accepted}
     )
@@ -183,12 +206,13 @@ async def reconcile_episodes(
                    operation=CASE WHEN d.metadata->>'knowledge_state' IN ('archived','rejected')
                                   THEN 'delete' ELSE gp.operation END,
                    status=CASE WHEN d.metadata->>'knowledge_state' IN ('archived','rejected')
-                               THEN 'pending' ELSE gp.status END,
+                               THEN 'pending' ELSE 'submitted' END,
                    updated_at=now()
                FROM gcor.knowledge_entries e
                LEFT JOIN gcor.documents d ON d.id=e.source_document_id
                WHERE gp.entry_id=$1 AND e.id=gp.entry_id
-                 AND gp.status='submitted' AND gp.reconciled_at IS NULL""",
+                 AND gp.status IN ('submitted','failed','processing')
+                 AND gp.reconciled_at IS NULL""",
             entry_id, episode_id,
         )
         reconciled += int(result_tag.endswith("1"))

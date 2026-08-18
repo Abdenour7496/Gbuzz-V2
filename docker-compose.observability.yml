@@ -16,6 +16,8 @@ services:
     depends_on:
       gcor-proxy:
         condition: service_healthy
+      recovery-controller:
+        condition: service_healthy
       postgres-exporter:
         condition: service_started
       redis-exporter:
@@ -48,6 +50,32 @@ services:
       - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     ports:
       - "${OBSERVABILITY_BIND_ADDR:-127.0.0.1}:${ALERTMANAGER_PORT:-9093}:9093"
+    depends_on:
+      alert-receiver:
+        condition: service_healthy
+    networks: [buzz-net]
+
+  alert-receiver:
+    build:
+      context: .
+      dockerfile: observability/alert-receiver/Dockerfile
+    profiles: [observability]
+    restart: unless-stopped
+    environment:
+      ALERT_AUDIT_PATH: /data/alerts.jsonl
+    volumes:
+      - alert-audit-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
     networks: [buzz-net]
 
   postgres-exporter:
@@ -73,6 +101,20 @@ services:
         condition: service_healthy
     networks: [buzz-net]
 
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.9.1
+    profiles: [observability]
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+    volumes:
+      - /:/host:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    networks: [buzz-net]
+
 volumes:
   prometheus-data:
   grafana-data:
+  alert-audit-data:

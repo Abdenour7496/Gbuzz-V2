@@ -1,8 +1,8 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-COPY proxy/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY proxy/requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY proxy/main.py .
 COPY schemas ./schemas
 COPY tests ./tests

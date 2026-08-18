@@ -1,6 +1,6 @@
 services:
   relay:
-    image: ${BUZZ_IMAGE:-ghcr.io/block/buzz:main}
+    image: ${BUZZ_IMAGE:-ghcr.io/block/buzz:0.2.1}
     restart: unless-stopped
     env_file: .env
     environment:
@@ -34,6 +34,11 @@ services:
       timeout: 3s
       retries: 12
       start_period: 30s
+    labels:
+      com.gbuzz.recovery.enabled: "true"
+      com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
+      com.gbuzz.recovery.service: relay
+      com.gbuzz.recovery.action: restart
     networks: [buzz-net]
 
   postgres:
@@ -52,6 +57,11 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+    labels:
+      com.gbuzz.recovery.enabled: "true"
+      com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
+      com.gbuzz.recovery.service: postgres
+      com.gbuzz.recovery.action: monitor
     networks: [buzz-net]
 
   redis:
@@ -68,6 +78,11 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+    labels:
+      com.gbuzz.recovery.enabled: "true"
+      com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
+      com.gbuzz.recovery.service: redis
+      com.gbuzz.recovery.action: monitor
     networks: [buzz-net]
 
   minio:
@@ -88,6 +103,11 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+    labels:
+      com.gbuzz.recovery.enabled: "true"
+      com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
+      com.gbuzz.recovery.service: minio
+      com.gbuzz.recovery.action: monitor
     networks: [buzz-net]
 
   minio-init:
@@ -120,6 +140,11 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+    labels:
+      com.gbuzz.recovery.enabled: "true"
+      com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
+      com.gbuzz.recovery.service: ollama
+      com.gbuzz.recovery.action: monitor
     networks: [buzz-net]
 
   ollama-init:
@@ -186,6 +211,7 @@ services:
       OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
       INGEST_WEBHOOK_SECRET: ${INGEST_WEBHOOK_SECRET:?set INGEST_WEBHOOK_SECRET}
       STACK_API_SECRET: ${STACK_API_SECRET:-}
+      RECOVERY_CONTROLLER_URL: http://recovery-controller:8080
       ENFORCE_STACK_API_SECRET: ${ENFORCE_STACK_API_SECRET:-true}
       MAX_ATTACHMENTS_PER_REQUEST: ${MAX_ATTACHMENTS_PER_REQUEST:-100}
       REMOTE_FETCH_ALLOWED_HOSTS: ${REMOTE_FETCH_ALLOWED_HOSTS:-}
@@ -197,6 +223,11 @@ services:
       interval: 10s
       timeout: 3s
       retries: 12
+    labels:
+      com.gbuzz.recovery.enabled: "true"
+      com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
+      com.gbuzz.recovery.service: gcor-proxy
+      com.gbuzz.recovery.action: restart
     networks: [buzz-net]
 
   mcp-postgres-gcor:
@@ -211,6 +242,11 @@ services:
       STACK_API_SECRET: ${STACK_API_SECRET:-}
     ports:
       - "${GCOR_MCP_BIND_ADDR:-127.0.0.1}:${GCOR_MCP_PORT:-8765}:8765"
+    labels:
+      com.gbuzz.recovery.enabled: "true"
+      com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
+      com.gbuzz.recovery.service: mcp-postgres-gcor
+      com.gbuzz.recovery.action: restart
     networks: [buzz-net]
 
   falkordb:
@@ -228,6 +264,11 @@ services:
       timeout: 5s
       retries: 12
       start_period: 15s
+    labels:
+      com.gbuzz.recovery.enabled: "true"
+      com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
+      com.gbuzz.recovery.service: falkordb
+      com.gbuzz.recovery.action: monitor
     networks: [buzz-net]
 
   graphiti-mcp:
@@ -263,6 +304,11 @@ services:
       - ./graphiti-mcp/config.yaml:/app/mcp/config/gbuzz.yaml:ro
     ports:
       - "${GRAPHITI_MCP_BIND_ADDR:-127.0.0.1}:${GRAPHITI_MCP_PORT:-8000}:8000"
+    labels:
+      com.gbuzz.recovery.enabled: "true"
+      com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
+      com.gbuzz.recovery.service: graphiti-mcp
+      com.gbuzz.recovery.action: restart
     networks: [buzz-net]
 
   graphiti-projector:
@@ -287,6 +333,11 @@ services:
       GRAPHITI_PROJECTOR_MAX_ATTEMPTS: ${GRAPHITI_PROJECTOR_MAX_ATTEMPTS:-8}
       GRAPHITI_PROJECTOR_PROCESSING_TIMEOUT_MINUTES: ${GRAPHITI_PROJECTOR_PROCESSING_TIMEOUT_MINUTES:-15}
       GRAPHITI_PROJECTOR_SUBMISSION_TIMEOUT_MINUTES: ${GRAPHITI_PROJECTOR_SUBMISSION_TIMEOUT_MINUTES:-45}
+    labels:
+      com.gbuzz.recovery.enabled: "true"
+      com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
+      com.gbuzz.recovery.service: graphiti-projector
+      com.gbuzz.recovery.action: restart
     networks: [buzz-net]
 
   gcor-event-projector:
@@ -312,6 +363,44 @@ services:
       PROJECTOR_POLL_SECONDS: ${PROJECTOR_POLL_SECONDS:-2}
       PROJECTOR_BATCH_SIZE: ${PROJECTOR_BATCH_SIZE:-50}
       PROJECTOR_EVENT_KINDS: ${PROJECTOR_EVENT_KINDS:-9,40002,45001,45003}
+    labels:
+      com.gbuzz.recovery.enabled: "true"
+      com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
+      com.gbuzz.recovery.service: gcor-event-projector
+      com.gbuzz.recovery.action: restart
+    networks: [buzz-net]
+
+  recovery-controller:
+    build:
+      context: .
+      dockerfile: recovery-controller/Dockerfile
+    restart: unless-stopped
+    environment:
+      RECOVERY_STACK_ID: ${RECOVERY_STACK_ID:-gbuzz}
+      RECOVERY_POLL_SECONDS: ${RECOVERY_POLL_SECONDS:-15}
+      RECOVERY_FAILURE_THRESHOLD: ${RECOVERY_FAILURE_THRESHOLD:-3}
+      RECOVERY_COOLDOWN_SECONDS: ${RECOVERY_COOLDOWN_SECONDS:-300}
+      RECOVERY_MAX_ACTIONS_PER_WINDOW: ${RECOVERY_MAX_ACTIONS_PER_WINDOW:-3}
+      RECOVERY_ACTION_WINDOW_SECONDS: ${RECOVERY_ACTION_WINDOW_SECONDS:-3600}
+      RECOVERY_RESTART_TIMEOUT_SECONDS: ${RECOVERY_RESTART_TIMEOUT_SECONDS:-20}
+      RECOVERY_AUDIT_PATH: /var/lib/gbuzz-recovery/audit.jsonl
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - recovery-audit-data:/var/lib/gbuzz-recovery
+    ports:
+      - "${RECOVERY_BIND_ADDR:-127.0.0.1}:${RECOVERY_PORT:-8082}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
     networks: [buzz-net]
 
 volumes:
@@ -321,6 +410,7 @@ volumes:
   buzz-git-data:
   ollama-data:
   buzz-falkordb-data:
+  recovery-audit-data:
 
 networks:
   buzz-net:

@@ -29,3 +29,19 @@ services:
     image: gbuzz-graphiti-projector:REPLACE_WITH_GIT_COMMIT
   gcor-event-projector:
     image: gbuzz-event-projector:REPLACE_WITH_GIT_COMMIT
+  recovery-controller:
+    image: gbuzz-recovery-controller:REPLACE_WITH_GIT_COMMIT
+  prometheus:
+    image: prom/prometheus@sha256:REPLACE_WITH_64_HEX_CHARACTERS
+  grafana:
+    image: grafana/grafana@sha256:REPLACE_WITH_64_HEX_CHARACTERS
+  alertmanager:
+    image: prom/alertmanager@sha256:REPLACE_WITH_64_HEX_CHARACTERS
+  alert-receiver:
+    image: gbuzz-alert-receiver:REPLACE_WITH_GIT_COMMIT
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter@sha256:REPLACE_WITH_64_HEX_CHARACTERS
+  redis-exporter:
+    image: oliver006/redis_exporter@sha256:REPLACE_WITH_64_HEX_CHARACTERS
+  node-exporter:
+    image: quay.io/prometheus/node-exporter@sha256:REPLACE_WITH_64_HEX_CHARACTERS

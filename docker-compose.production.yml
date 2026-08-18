@@ -56,3 +56,18 @@ services:
     <<: *app-hardening
     mem_limit: ${EVENT_PROJECTOR_MEMORY_LIMIT:-512m}
     cpus: ${EVENT_PROJECTOR_CPU_LIMIT:-0.5}
+
+  recovery-controller:
+    init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: ${RECOVERY_CONTROLLER_MEMORY_LIMIT:-128m}
+    cpus: ${RECOVERY_CONTROLLER_CPU_LIMIT:-0.25}
+
+  alertmanager:
+    volumes: !override
+      - ${ALERTMANAGER_CONFIG_FILE:?set ALERTMANAGER_CONFIG_FILE}:/etc/alertmanager/alertmanager.yml:ro
+    depends_on: !reset []

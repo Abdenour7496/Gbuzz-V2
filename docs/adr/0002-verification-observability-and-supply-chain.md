@@ -50,5 +50,5 @@ Dockerfiles to those files after reviewing and committing the generated locks.
 - [x] Add provisioned monitoring dashboards and alerts.
 - [x] Add vulnerability, secret, and SBOM CI jobs.
 - [x] Add an immutable-image verification script and lock overlay template.
-- [ ] Generate, review, and commit Python lock files during the next dependency update.
+- [x] Generate Python lock files and enforce hash-verified installs in CI and application images.
 - [ ] Configure a real Alertmanager receiver for each deployment.
