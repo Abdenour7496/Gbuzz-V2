@@ -1,0 +1,23 @@
+# Extends the default gitleaks rules. Only documented placeholders and synthetic
+# test material are allowlisted; anything resembling a real credential still fails CI.
+title = "Gbuzz secret scan"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documented placeholders, example identities and synthetic test credentials"
+paths = [
+    '''(^|/)\.env\.example$''',
+    '''(^|/)\.env copy\.example$''',
+    '''^clients/buzz-desktop/package-lock\.json$''',
+]
+regexes = [
+    '''change-me[-a-z0-9]*''',
+    '''CHANGE_ME_[A-Z0-9_]+''',
+    '''npub1(example|admin)[a-z]*''',
+    '''(integration|runtime|test-only|ci-placeholder)-?secret''',
+    '''test-credential-with-no-production-authority''',
+    '''0{64}''',
+]
+stopwords = ["example", "placeholder", "change-me"]

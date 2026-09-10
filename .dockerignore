@@ -1,7 +1,7 @@
 .git
 .venv*/
 node_modules/
-clients/
+clients/buzz-desktop/
 .github
 .env
 .env.*
