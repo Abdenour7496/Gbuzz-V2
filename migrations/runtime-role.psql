@@ -1,0 +1,8 @@
+SET client_min_messages = warning;
+-- Creates or updates the runtime login role. Not a migration: the migrate step runs
+-- it after every migration pass with psql -v user=... -v pw=... so the password can
+-- rotate without a schema change. The role receives all privileges through gcor_app.
+SELECT format('CREATE ROLE %I LOGIN', :'user')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'user') \gexec
+SELECT format('ALTER ROLE %I LOGIN INHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD %L', :'user', :'pw') \gexec
+SELECT format('GRANT gcor_app TO %I', :'user') \gexec
