@@ -120,6 +120,18 @@ try {
     }
 
     # --- slices --------------------------------------------------------------
+    Add-Slice -Subject 'Fix the first CI run: proxy image context, Trivy pin, secret-scan allowlist' -Body @(
+        'The proxy image copies clients/buzz-knowledge.mjs, so .dockerignore excludes only',
+        'clients/buzz-desktop (the Node test project) instead of the whole clients tree.',
+        'aquasecurity/trivy-action is pinned to the immutable v0.36.0 commit; the 0.32.0',
+        'reference lacked its v prefix. .gitleaks.toml allowlists documented placeholders',
+        '(change-me values, CHANGE_ME_ templates, npub1example identities, synthetic test',
+        'credentials) while keeping the default rule set for everything else.',
+        '',
+        'Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>',
+        'Claude-Session: https://claude.ai/code/session_01AW5NhXzSpGjbEGwFpHgfuw'
+    ) -Paths @('.dockerignore', '.github/workflows/ci.yml', '.gitleaks.toml')
+
     Add-Slice -Subject 'Add transactional governance outbox, egress policy and production safeguards' -Body @(
         'Migration 0007 adds the governance outbox; approvals now commit state and an',
         'outbox event in one transaction and publish MinIO artifacts asynchronously.',
