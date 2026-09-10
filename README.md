@@ -2,7 +2,13 @@
 
 buzzG adds a self-contained knowledge layer to a local [Buzz](https://github.com/block/buzz) deployment. Chat sessions are the primary knowledge container; people, agents, and uploaded documents are participants that contribute entries to one authoritative PostgreSQL schema. MinIO retains the original and normalized recovery artifacts, GCOR provides governed document retrieval, and [Graphiti](https://github.com/getzep/graphiti) builds the rebuildable temporal context graph through its MCP server.
 
-Docker Compose starts Buzz, PostgreSQL with pgvector, Redis, MinIO, Ollama, GCOR, FalkorDB, the upstream Graphiti MCP server, and a small PostgreSQL-to-MCP projector.
+Docker Compose starts Buzz, PostgreSQL with pgvector, Redis, MinIO, Ollama, GCOR, and the Buzz event projector. Graphiti, FalkorDB and their projector are an optional extension, disabled by default. See [optional graph setup and reactivation](docs/optional-graph.md).
+
+The optional [knowledge workspace](http://127.0.0.1:5011/workspace) uses existing Buzz/Nostr identities for proposals, review and governed answers. See [enterprise workflows and operating evidence](docs/enterprise-workflows.md) and [identity setup](docs/enterprise-pilot-setup.md).
+
+The primary objective is [knowledge generated through human–AI collaboration](docs/collaborative-knowledge-objective.md) inside Buzz. External business-source integration is not required.
+
+The [Buzz Knowledge agent](docs/buzz-chat-knowledge.md) now supports discussion synthesis, proposals, human approval and cited answers directly in Buzz. Start with `!knowledge help` in an enrolled channel.
 
 ## What Runs Where
 
@@ -69,7 +75,7 @@ Component ownership is intentionally non-overlapping:
    docker compose -f docker-compose.yml -f docker-compose.stack-only.yml up -d --build
    ```
 
-   On the first run, Ollama downloads `nomic-embed-text`, the normal generation model, and the Graphiti extraction model (`qwen2.5:7b` by default). Graphiti is built from the pinned upstream `v0.29.3` source. The first build and model download can take several minutes.
+   On the first run, Ollama downloads the configured embedding and generation models. The optional graph extension separately downloads its extraction/embedding models and builds Graphiti from pinned upstream `v0.29.3` source when enabled.
 
 4. Check the service state:
 
@@ -79,7 +85,7 @@ Component ownership is intentionally non-overlapping:
    curl.exe http://127.0.0.1:5001/health
    ```
 
-   `gcor-migrate`, `minio-init`, and `ollama-init` are one-shot setup services and should show `Exited (0)`. The relay, PostgreSQL, Redis, MinIO, Ollama, GCOR, FalkorDB, Graphiti MCP, and both projectors should be running.
+   `gcor-migrate`, `minio-init`, and `ollama-init` are one-shot setup services and should show `Exited (0)`. `gcor-migrate` records each applied file in `gcor.schema_migrations` (filename + SHA-256) and skips unchanged files on later starts; a modified migration file is re-applied, so keep migrations idempotent. The relay, PostgreSQL, Redis, MinIO, Ollama, GCOR and Buzz event projector should be running. Graph services are absent unless explicitly enabled.
 
    In stack-only mode, `docker compose ps` should show no published host ports for `gcor-proxy` and `mcp-postgres-gcor`.
 
@@ -102,6 +108,22 @@ stack in the same directory. The Compose file also declares this name as a
 second safeguard.
 
 ## Observe The Stack
+
+The optional [Buzz identity pilot](docs/enterprise-pilot-setup.md) adds a separate
+read-only API using signed Nostr requests and live Buzz channel membership.
+It requires an explicitly approved pilot corpus; it does not expose the internal
+MCP or governance service to users.
+
+Production request limits, dependency health endpoints, and a guarded proxy-only
+rollout with image rollback are documented in
+[Production safeguards](docs/production-safeguards.md). Existing health checks and
+credentials remain compatible; the rollout refuses to alter an absent proxy or
+an unknown deployment overlay.
+
+[Transactional governance and outbound fetch restrictions](docs/governance-and-egress.md)
+adds migration 0007, durable audit publication with retries, optional idempotency
+keys, and DNS-bound remote fetching. Apply the migration before deploying this
+version; audit files are published asynchronously after governance commits.
 
 The observability settings live in `.env`. Before first use, replace
 `GRAFANA_ADMIN_PASSWORD`; `GRAFANA_ADMIN_USER` defaults to `admin`. Start or
@@ -127,7 +149,9 @@ The provisioned Gbuzz dashboard covers target health, ingestion activity,
 attachment failures, PostgreSQL connections, Redis memory, managed service
 health, and automated recovery actions. Metrics and dashboard state persist in
 named volumes across container recreation. Configure a deployment-specific
-Alertmanager receiver before relying on notifications.
+Alertmanager receiver before relying on notifications: copy
+`observability/alertmanager.production.yml.example`, point `ALERTMANAGER_CONFIG_FILE`
+at it, and include `docker-compose.observability-production.yml` in production.
 
 ## Built-in Health Monitoring And Recovery
 
@@ -155,11 +179,19 @@ curl.exe http://127.0.0.1:8082/api/status
 docker compose exec recovery-controller tail -n 50 /var/lib/gbuzz-recovery/audit.jsonl
 ```
 
-The controller mounts the Docker Engine socket, which is a privileged control
-surface even when the filesystem mount is read-only. It has no mutation API or
-general command runner: remediation is limited to immutable Compose labels. Do
-not expose the controller publicly. For higher-assurance deployments, place a
-restricted Docker socket proxy between the controller and the engine.
+The controller never touches the Docker Engine socket directly. A
+`docker-socket-proxy` service holds the socket on a private `control-net` network
+and forwards only container listing, inspection and restart requests
+(`CONTAINERS=1 ALLOW_RESTARTS=1 POST=0`); exec, create, image, volume, network and
+system calls are rejected before they reach the engine. The controller has no
+mutation API or general command runner: remediation is limited to immutable
+Compose labels. Do not expose the controller publicly.
+
+Service networks are split: PostgreSQL, Redis and FalkorDB sit on an internal
+`data-net` reachable only from the relay, GCOR services, migrations and the
+monitoring exporters; MinIO joins it as well and keeps its localhost console on
+`buzz-net`. Everything else (MCP bridge, Ollama, controller, Grafana) cannot open
+a connection to the databases.
 
 The GCOR MCP bridge exposes the same read-only assessment as
 `get_stack_health`, allowing the Buzz SRE agent to inspect service state,
@@ -453,7 +485,7 @@ Inspect delivery state independently of core service health:
 curl.exe -H "X-Gcor-Webhook-Secret: $stackSecret" http://127.0.0.1:5001/api/graphiti/status
 ```
 
-`in_flight` should never exceed one. `dead_letter` must be zero before a production release; failed entries remain in PostgreSQL and can be safely replayed because FalkorDB is a derived projection.
+When the graph extension is enabled, `in_flight` should never exceed one and `dead_letter` must be zero before a graph-enabled production release. When disabled, pending projection records are retained intentionally for later catch-up; they do not block core releases. Failed entries remain in PostgreSQL and can be safely replayed because FalkorDB is a derived projection.
 
 Inspect the four release-blocking backlog classes and fail closed unless all are zero:
 
@@ -475,8 +507,12 @@ Local Compose remains fully self-contained and uses Ollama. On hardware that can
 
 ```powershell
 $env:OPENAI_API_KEY = "..."
-docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.production.yml -f docker-compose.graph.yml -f docker-compose.graph-production.yml up -d --build
 ```
+
+When the `observability` profile is part of the deployment, also add
+`-f docker-compose.observability.yml -f docker-compose.observability-production.yml --profile observability`
+so Alertmanager loads the deployment receiver from `ALERTMANAGER_CONFIG_FILE`.
 
 The production default embedding model is `text-embedding-3-small` with 1536 dimensions. The API key is required at Compose interpolation time and must not be committed. Local and production Graphiti embeddings have different dimensions; after a mode change, rebuild the FalkorDB Graphiti projection from authoritative PostgreSQL rather than mixing vectors in one graph. This override changes Graphiti inference only; GCOR's PostgreSQL `pgvector` index retains its independently configured embedding model and dimension.
 
@@ -739,4 +775,4 @@ docker compose down --volumes
 
 ## Security Notes
 
-The Compose setup is intended for local development. The proxy enforces the caller-supplied `access_level` and optional `agent_id` filters during retrieval, but an untrusted API caller can choose those fields. For production, keep the GCOR proxy and MCP server on a private network, use strong stable secrets, terminate public access at a dedicated ingress layer, and derive ACL fields from trusted Buzz identity rather than from caller-controlled request data.
+The Compose setup is intended for local development. The proxy enforces the caller-supplied `access_level` and optional `agent_id` filters during retrieval, but an untrusted API caller can choose those fields. For production, keep the GCOR proxy and MCP server on a private network, use strong stable secrets, terminate public access at a dedicated ingress layer, and derive ACL fields from trusted Buzz identity rather than from caller-controlled request data. Set `GCOR_DB_USER` and `GCOR_DB_PASSWORD` so services connect as the restricted runtime role created by migration 0011 rather than as the schema owner; see [production safeguards](docs/production-safeguards.md).

@@ -2,6 +2,7 @@
 param(
     [string]$ComposeFile = "docker-compose.production.lock.yml",
     [bool]$IncludeObservability = $true,
+    [switch]$IncludeGraph,
     [switch]$RequireRegistry
 )
 
@@ -12,6 +13,7 @@ if (-not (Test-Path -LiteralPath $ComposeFile)) {
 }
 
 $composeFiles = @("-f", "docker-compose.yml")
+if ($IncludeGraph) { $composeFiles += @("-f", "docker-compose.graph.yml") }
 if ($IncludeObservability) {
     $composeFiles += @("-f", "docker-compose.observability.yml")
     $composeFiles += @("--profile", "observability")

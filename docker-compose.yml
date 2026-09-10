@@ -7,6 +7,7 @@ services:
       BUZZ_BIND_ADDR: 0.0.0.0:3000
       BUZZ_HEALTH_PORT: "8080"
       BUZZ_METRICS_PORT: "9102"
+      BUZZ_RELAY_PUBLIC_URL: http://127.0.0.1:3000
       DATABASE_URL: postgres://${POSTGRES_USER:-buzz}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-buzz}
       REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
       BUZZ_S3_ENDPOINT: http://minio:9000
@@ -39,7 +40,7 @@ services:
       com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
       com.gbuzz.recovery.service: relay
       com.gbuzz.recovery.action: restart
-    networks: [buzz-net]
+    networks: [buzz-net, data-net]
 
   postgres:
     image: pgvector/pgvector:pg17
@@ -62,7 +63,7 @@ services:
       com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
       com.gbuzz.recovery.service: postgres
       com.gbuzz.recovery.action: monitor
-    networks: [buzz-net]
+    networks: [data-net]
 
   redis:
     image: redis:7-alpine
@@ -83,7 +84,7 @@ services:
       com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
       com.gbuzz.recovery.service: redis
       com.gbuzz.recovery.action: monitor
-    networks: [buzz-net]
+    networks: [data-net]
 
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
@@ -108,7 +109,7 @@ services:
       com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
       com.gbuzz.recovery.service: minio
       com.gbuzz.recovery.action: monitor
-    networks: [buzz-net]
+    networks: [buzz-net, data-net]
 
   minio-init:
     image: minio/mc:RELEASE.2025-08-13T08-35-41Z
@@ -120,14 +121,35 @@ services:
       BUZZ_S3_ACCESS_KEY: ${BUZZ_S3_ACCESS_KEY:?set BUZZ_S3_ACCESS_KEY}
       BUZZ_S3_SECRET_KEY: ${BUZZ_S3_SECRET_KEY:?set BUZZ_S3_SECRET_KEY}
       BUZZ_S3_BUCKET: ${BUZZ_S3_BUCKET:-buzz-media}
+      GCOR_S3_BUCKET: ${GCOR_S3_BUCKET:-buzz-gcor}
+      GCOR_S3_ACCESS_KEY: ${GCOR_S3_ACCESS_KEY:-}
+      GCOR_S3_SECRET_KEY: ${GCOR_S3_SECRET_KEY:-}
+      GCOR_CHANNEL_BUCKET_PREFIX: ${GCOR_CHANNEL_BUCKET_PREFIX:-}
+    # Creates the relay media bucket and, when GCOR_S3_ACCESS_KEY/SECRET_KEY are set,
+    # a GCOR service user whose policy covers only the GCOR bucket and channel buckets
+    # under GCOR_CHANNEL_BUCKET_PREFIX (plus bucket listing). Root keys stay with the
+    # relay and this initializer.
     entrypoint: >
       /bin/sh -euc '
         mc alias set local http://minio:9000 "$${BUZZ_S3_ACCESS_KEY}" "$${BUZZ_S3_SECRET_KEY}"
         mc mb --ignore-existing "local/$${BUZZ_S3_BUCKET}"
         mc anonymous set none "local/$${BUZZ_S3_BUCKET}"
         mc version enable "local/$${BUZZ_S3_BUCKET}"
+        mc mb --ignore-existing "local/$${GCOR_S3_BUCKET}"
+        mc anonymous set none "local/$${GCOR_S3_BUCKET}"
+        mc version enable "local/$${GCOR_S3_BUCKET}"
+        if [ -n "$${GCOR_S3_SECRET_KEY}" ]; then
+          if [ -z "$${GCOR_S3_ACCESS_KEY}" ] || [ -z "$${GCOR_CHANNEL_BUCKET_PREFIX}" ]; then
+            echo "GCOR_S3_ACCESS_KEY and GCOR_CHANNEL_BUCKET_PREFIX are required with GCOR_S3_SECRET_KEY" >&2; exit 1
+          fi
+          printf "%s" "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:ListAllMyBuckets\"],\"Resource\":[\"arn:aws:s3:::*\"]},{\"Effect\":\"Allow\",\"Action\":[\"s3:*\"],\"Resource\":[\"arn:aws:s3:::$${GCOR_S3_BUCKET}\",\"arn:aws:s3:::$${GCOR_S3_BUCKET}/*\",\"arn:aws:s3:::$${GCOR_CHANNEL_BUCKET_PREFIX}*\",\"arn:aws:s3:::$${GCOR_CHANNEL_BUCKET_PREFIX}*/*\"]}]}" > /tmp/gcor-service-policy.json
+          mc admin policy create local gcor-service /tmp/gcor-service-policy.json
+          mc admin user add local "$${GCOR_S3_ACCESS_KEY}" "$${GCOR_S3_SECRET_KEY}"
+          mc admin policy attach local gcor-service --user "$${GCOR_S3_ACCESS_KEY}" || true
+          echo "scoped object credentials ready for $${GCOR_S3_ACCESS_KEY}"
+        fi
       '
-    networks: [buzz-net]
+    networks: [data-net]
 
   ollama:
     image: ollama/ollama:latest
@@ -158,8 +180,7 @@ services:
       OLLAMA_HOST: ollama:11434
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
       GENERATION_MODEL: ${GENERATION_MODEL:-qwen2.5:1.5b}
-      GRAPHITI_MODEL: ${GRAPHITI_MODEL:-qwen2.5:7b}
-    command: ["ollama pull \"$${EMBEDDING_MODEL}\" && ollama pull \"$${GENERATION_MODEL}\" && ollama pull \"$${GRAPHITI_MODEL}\""]
+    command: ["ollama pull \"$${EMBEDDING_MODEL}\" && ollama pull \"$${GENERATION_MODEL}\""]
     volumes:
       - ollama-data:/root/.ollama
     networks: [buzz-net]
@@ -177,10 +198,12 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       PGDATABASE: ${POSTGRES_DB:-buzz}
       EMBEDDING_DIMS: ${EMBEDDING_DIMS:-1536}
+      GCOR_DB_USER: ${GCOR_DB_USER:-}
+      GCOR_DB_PASSWORD: ${GCOR_DB_PASSWORD:-}
     volumes:
       - ./migrations:/migrations:ro
-    command: ["/bin/sh", "-ec", "for migration in /migrations/*.sql; do sed \"s/__EMBEDDING_DIMS__/$${EMBEDDING_DIMS}/g\" \"$${migration}\" | psql -v ON_ERROR_STOP=1; done"]
-    networks: [buzz-net]
+    command: ["/bin/sh", "-ec", "psql -v ON_ERROR_STOP=1 -c \"CREATE SCHEMA IF NOT EXISTS gcor; CREATE TABLE IF NOT EXISTS gcor.schema_migrations (filename text PRIMARY KEY, sha256 text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())\"; for migration in /migrations/*.sql; do name=$$(basename \"$${migration}\"); sum=$$(sha256sum \"$${migration}\" | cut -d\" \" -f1); applied=$$(psql -tA -v ON_ERROR_STOP=1 -c \"SELECT sha256 FROM gcor.schema_migrations WHERE filename='$${name}'\"); if [ \"$${applied}\" = \"$${sum}\" ]; then echo \"skip $${name}\"; continue; fi; echo \"apply $${name}\"; sed \"s/__EMBEDDING_DIMS__/$${EMBEDDING_DIMS}/g\" \"$${migration}\" | psql -v ON_ERROR_STOP=1; psql -v ON_ERROR_STOP=1 -c \"INSERT INTO gcor.schema_migrations (filename, sha256) VALUES ('$${name}', '$${sum}') ON CONFLICT (filename) DO UPDATE SET sha256=EXCLUDED.sha256, applied_at=now()\"; done; if [ -n \"$${GCOR_DB_PASSWORD}\" ]; then psql -v ON_ERROR_STOP=1 -v user=\"$${GCOR_DB_USER:-gcor_runtime}\" -v pw=\"$${GCOR_DB_PASSWORD}\" -f /migrations/runtime-role.psql; echo \"runtime role $${GCOR_DB_USER:-gcor_runtime} ready\"; fi"]
+    networks: [data-net]
 
   gcor-proxy:
     build:
@@ -197,13 +220,14 @@ services:
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
-      POSTGRES_USER: ${POSTGRES_USER:-buzz}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_USER: ${GCOR_DB_USER:-${POSTGRES_USER:-buzz}}
+      POSTGRES_PASSWORD: ${GCOR_DB_PASSWORD:-${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}}
       POSTGRES_DB: ${POSTGRES_DB:-buzz}
       MINIO_ENDPOINT: http://minio:9000
-      MINIO_ROOT_USER: ${BUZZ_S3_ACCESS_KEY:?set BUZZ_S3_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${BUZZ_S3_SECRET_KEY:?set BUZZ_S3_SECRET_KEY}
+      MINIO_ROOT_USER: ${GCOR_S3_ACCESS_KEY:-${BUZZ_S3_ACCESS_KEY:?set BUZZ_S3_ACCESS_KEY}}
+      MINIO_ROOT_PASSWORD: ${GCOR_S3_SECRET_KEY:-${BUZZ_S3_SECRET_KEY:?set BUZZ_S3_SECRET_KEY}}
       MINIO_BUCKET: ${GCOR_S3_BUCKET:-buzz-gcor}
+      GCOR_CHANNEL_BUCKET_PREFIX: ${GCOR_CHANNEL_BUCKET_PREFIX:-}
       EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-openai}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       GENERATION_MODEL: ${GENERATION_MODEL:-qwen2.5:1.5b}
@@ -214,8 +238,16 @@ services:
       RECOVERY_CONTROLLER_URL: http://recovery-controller:8080
       ENFORCE_STACK_API_SECRET: ${ENFORCE_STACK_API_SECRET:-true}
       MAX_ATTACHMENTS_PER_REQUEST: ${MAX_ATTACHMENTS_PER_REQUEST:-100}
+      MAX_INGEST_FILE_BYTES: ${MAX_INGEST_FILE_BYTES:-26214400}
+      MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-27262976}
+      MAX_API_IN_FLIGHT: ${MAX_API_IN_FLIGHT:-4}
+      REQUEST_BODY_TIMEOUT_SECONDS: ${REQUEST_BODY_TIMEOUT_SECONDS:-60}
+      MAX_QUERY_CHARS: ${MAX_QUERY_CHARS:-10000}
+      MAX_ATTACHMENT_TOTAL_BYTES: ${MAX_ATTACHMENT_TOTAL_BYTES:-104857600}
+      ATTACHMENT_REPLAY_BUDGET_SECONDS: ${ATTACHMENT_REPLAY_BUDGET_SECONDS:-120}
+      REMOTE_FETCH_TOTAL_TIMEOUT_SECONDS: ${REMOTE_FETCH_TOTAL_TIMEOUT_SECONDS:-60}
       REMOTE_FETCH_ALLOWED_HOSTS: ${REMOTE_FETCH_ALLOWED_HOSTS:-}
-      REMOTE_FETCH_BLOCK_PRIVATE_HOSTS: ${REMOTE_FETCH_BLOCK_PRIVATE_HOSTS:-false}
+      REMOTE_FETCH_BLOCK_PRIVATE_HOSTS: ${REMOTE_FETCH_BLOCK_PRIVATE_HOSTS:-true}
     ports:
       - "${GCOR_PROXY_BIND_ADDR:-127.0.0.1}:${GCOR_PROXY_PORT:-5001}:5001"
     healthcheck:
@@ -228,7 +260,7 @@ services:
       com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
       com.gbuzz.recovery.service: gcor-proxy
       com.gbuzz.recovery.action: restart
-    networks: [buzz-net]
+    networks: [buzz-net, data-net]
 
   mcp-postgres-gcor:
     build: ./mcp-postgres-gcor
@@ -250,6 +282,7 @@ services:
     networks: [buzz-net]
 
   falkordb:
+    profiles: [graph]
     image: falkordb/falkordb:v4.20.1
     restart: unless-stopped
     environment:
@@ -269,9 +302,10 @@ services:
       com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
       com.gbuzz.recovery.service: falkordb
       com.gbuzz.recovery.action: monitor
-    networks: [buzz-net]
+    networks: [data-net]
 
   graphiti-mcp:
+    profiles: [graph]
     image: gbuzz-graphiti-mcp:0.29.3
     build:
       context: graphiti-mcp
@@ -284,7 +318,7 @@ services:
     depends_on:
       falkordb:
         condition: service_healthy
-      ollama-init:
+      graphiti-model-init:
         condition: service_completed_successfully
     environment:
       CONFIG_PATH: /app/mcp/config/gbuzz.yaml
@@ -309,9 +343,10 @@ services:
       com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
       com.gbuzz.recovery.service: graphiti-mcp
       com.gbuzz.recovery.action: restart
-    networks: [buzz-net]
+    networks: [buzz-net, data-net]
 
   graphiti-projector:
+    profiles: [graph]
     build:
       context: .
       dockerfile: graphiti-projector/Dockerfile
@@ -324,8 +359,8 @@ services:
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
-      POSTGRES_USER: ${POSTGRES_USER:-buzz}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_USER: ${GCOR_DB_USER:-${POSTGRES_USER:-buzz}}
+      POSTGRES_PASSWORD: ${GCOR_DB_PASSWORD:-${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}}
       POSTGRES_DB: ${POSTGRES_DB:-buzz}
       GRAPHITI_MCP_URL: http://graphiti-mcp:8000/mcp
       GRAPHITI_MCP_HOST_HEADER: localhost:8000
@@ -338,6 +373,26 @@ services:
       com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
       com.gbuzz.recovery.service: graphiti-projector
       com.gbuzz.recovery.action: restart
+    networks: [buzz-net, data-net]
+
+  graphiti-model-init:
+    profiles: [graph]
+    image: ollama/ollama:latest
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: ["sh", "-ec"]
+    environment:
+      OLLAMA_HOST: ollama:11434
+      GRAPHITI_MODEL: ${GRAPHITI_MODEL:-qwen2.5:7b}
+      GRAPHITI_EMBEDDING_MODEL: ${GRAPHITI_EMBEDDING_MODEL:-nomic-embed-text}
+      GRAPHITI_LLM_API_URL: ${GRAPHITI_LLM_API_URL:-http://ollama:11434/v1}
+      GRAPHITI_EMBEDDING_API_URL: ${GRAPHITI_EMBEDDING_API_URL:-http://ollama:11434/v1}
+    command:
+      - |
+        if [ "$${GRAPHITI_LLM_API_URL}" = "http://ollama:11434/v1" ]; then ollama pull "$${GRAPHITI_MODEL}"; fi
+        if [ "$${GRAPHITI_EMBEDDING_API_URL}" = "http://ollama:11434/v1" ]; then ollama pull "$${GRAPHITI_EMBEDDING_MODEL}"; fi
     networks: [buzz-net]
 
   gcor-event-projector:
@@ -353,8 +408,8 @@ services:
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
-      POSTGRES_USER: ${POSTGRES_USER:-buzz}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_USER: ${GCOR_DB_USER:-${POSTGRES_USER:-buzz}}
+      POSTGRES_PASSWORD: ${GCOR_DB_PASSWORD:-${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}}
       POSTGRES_DB: ${POSTGRES_DB:-buzz}
       GCOR_PROXY_URL: http://gcor-proxy:5001
       BUZZ_RELAY_HTTP_URL: http://relay:3000
@@ -368,7 +423,27 @@ services:
       com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
       com.gbuzz.recovery.service: gcor-event-projector
       com.gbuzz.recovery.action: restart
-    networks: [buzz-net]
+    networks: [buzz-net, data-net]
+
+  docker-socket-proxy:
+    # The only holder of the Docker Engine socket. It forwards container listing,
+    # inspection and restart requests and rejects everything else (exec, create,
+    # images, volumes, networks, swarm, system). Reachable solely on control-net.
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      ALLOW_RESTARTS: "1"
+      POST: "0"
+      EVENTS: "0"
+      PING: "1"
+      VERSION: "0"
+      LOG_LEVEL: warning
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    security_opt:
+      - no-new-privileges:true
+    networks: [control-net]
 
   recovery-controller:
     build:
@@ -384,8 +459,11 @@ services:
       RECOVERY_ACTION_WINDOW_SECONDS: ${RECOVERY_ACTION_WINDOW_SECONDS:-3600}
       RECOVERY_RESTART_TIMEOUT_SECONDS: ${RECOVERY_RESTART_TIMEOUT_SECONDS:-20}
       RECOVERY_AUDIT_PATH: /var/lib/gbuzz-recovery/audit.jsonl
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+    depends_on:
+      docker-socket-proxy:
+        condition: service_started
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - recovery-audit-data:/var/lib/gbuzz-recovery
     ports:
       - "${RECOVERY_BIND_ADDR:-127.0.0.1}:${RECOVERY_PORT:-8082}:8080"
@@ -401,7 +479,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    networks: [buzz-net]
+    networks: [buzz-net, control-net]
 
 volumes:
   buzz-postgres-data:
@@ -413,5 +491,15 @@ volumes:
   recovery-audit-data:
 
 networks:
+  # Application network: services that need each other, host ports or egress.
   buzz-net:
     driver: bridge
+  # Authoritative stores. Internal: no egress, no published ports; joined only by
+  # the relay, GCOR services, migrations and exporters that read them.
+  data-net:
+    driver: bridge
+    internal: true
+  # Docker Engine control path: socket proxy and recovery controller only.
+  control-net:
+    driver: bridge
+    internal: true

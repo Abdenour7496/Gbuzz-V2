@@ -1,0 +1,8 @@
+# Production override for the observability profile. Use only together with
+# docker-compose.observability.yml and --profile observability; it replaces the
+# local audit-webhook Alertmanager configuration with the deployment receiver.
+services:
+  alertmanager:
+    volumes: !override
+      - ${ALERTMANAGER_CONFIG_FILE:?set ALERTMANAGER_CONFIG_FILE}:/etc/alertmanager/alertmanager.yml:ro
+    depends_on: !reset []

@@ -87,7 +87,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    networks: [buzz-net]
+    networks: [buzz-net, data-net]
 
   redis-exporter:
     image: oliver006/redis_exporter:v1.77.0
@@ -99,7 +99,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    networks: [buzz-net]
+    networks: [buzz-net, data-net]
 
   node-exporter:
     image: quay.io/prometheus/node-exporter:v1.9.1

@@ -14,13 +14,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  compose:
-    name: Validate Compose
+  release-artifact:
+    name: Validate release artifact inputs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Reject generated backup and archive artifacts
+        shell: pwsh
+        run: ./scripts/verify-release-artifact.ps1
+      - name: Verify guarded rollout and fallback
+        shell: pwsh
+        run: ./tests/test_guarded_rollout.ps1
+
+  compose:
+    name: Validate Compose (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    env:
+      # Placeholders so required variables interpolate; never real secrets.
+      OPENAI_API_KEY: ci-placeholder
+      BUZZ_KNOWLEDGE_PRIVATE_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: local
+            files: -f docker-compose.yml
+          - name: stack-only
+            files: -f docker-compose.yml -f docker-compose.stack-only.yml
+          - name: production-core
+            files: -f docker-compose.yml -f docker-compose.production.yml -f docker-compose.production.lock.example.yml
+          - name: production-observability
+            files: -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.production.yml -f docker-compose.observability-production.yml -f docker-compose.production.lock.example.yml --profile observability
+          - name: production-graph
+            files: -f docker-compose.yml -f docker-compose.production.yml -f docker-compose.graph.yml -f docker-compose.graph-production.yml
+          - name: production-enterprise-buzz
+            files: -f docker-compose.yml -f docker-compose.production.yml -f docker-compose.enterprise.yml -f docker-compose.buzz.yml
+          - name: production-full
+            files: -f docker-compose.yml -f docker-compose.safeguards.override.example.json -f docker-compose.observability.yml -f docker-compose.production.yml -f docker-compose.observability-production.yml -f docker-compose.enterprise.yml -f docker-compose.buzz.yml -f docker-compose.graph.yml -f docker-compose.graph-production.yml --profile observability
+          - name: integration
+            files: -f docker-compose.integration.yml
+    steps:
+      - uses: actions/checkout@v4
       - run: cp .env.example .env
-      - run: docker compose -f docker-compose.yml -f docker-compose.production.yml config --quiet
+      - name: Verify optional graph deployment boundaries
+        if: matrix.name == 'local'
+        shell: pwsh
+        run: ./tests/test_optional_graph.ps1
+      - run: docker compose ${{ matrix.files }} config --quiet
 
   python-tests:
     name: Python tests (${{ matrix.component }})
@@ -50,6 +90,10 @@ jobs:
             requirements: graphiti-projector/requirements.lock
             test: graphiti-projector/test_main.py
             pythonpath: graphiti-projector
+          - component: mcp-governance
+            requirements: mcp-postgres-gcor/requirements.lock
+            test: tests/test_mcp_governance.py
+            pythonpath: mcp-postgres-gcor
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -61,6 +105,11 @@ jobs:
         env:
           PYTHONPATH: ${{ matrix.pythonpath }}
         run: python -m unittest -v "${{ matrix.test }}"
+      - name: Run proxy production safeguards
+        if: matrix.component == 'proxy'
+        env:
+          PYTHONPATH: proxy
+        run: python -m unittest -v tests/test_production_safeguards.py tests/test_governance_egress.py tests/test_enterprise_access.py tests/test_enterprise_workflows.py tests/test_evaluation.py tests/test_graph_retrieval.py tests/test_buzz_chat.py tests/test_buzz_cards.py
 
   recovery-tests:
     name: Python tests (recovery-controller)
@@ -71,6 +120,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m unittest -v recovery-controller/test_main.py
+        env:
+          PYTHONPATH: recovery-controller
 
   integration:
     name: Integration lifecycle
@@ -78,8 +129,51 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: clients/buzz-desktop/package-lock.json
+      - name: Verify Buzz signing adapter
+        run: node --test tests/test_buzz_client.mjs
+      - name: Verify knowledge card model, view and command construction
+        working-directory: clients/buzz-desktop
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
       - name: Build and run the isolated integration stack
-        run: docker compose -p gbuzz-integration -f docker-compose.integration.yml up --build --abort-on-container-exit --exit-code-from smoke smoke
+        run: |
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml up -d --build --wait --wait-timeout 120 gcor-proxy
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml run --rm --no-deps smoke
+      - name: Verify governance transaction failures and durable publication
+        run: |
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml stop gcor-proxy
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml run --rm --no-deps -e PYTHONPATH=/app gcor-proxy python /app/tests/integration/governance_faults.py
+      - name: Verify real storage outage and process restart recovery
+        run: |
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml up -d --no-deps --wait --wait-timeout 60 gcor-proxy
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml stop minio
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml exec -T gcor-proxy python /app/tests/integration/governance_outage.py enqueue
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml stop gcor-proxy
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml start minio
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml start gcor-proxy
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml exec -T gcor-proxy python /app/tests/integration/governance_outage.py verify
+      - name: Verify runtime role privileges and row-level security scope
+        run: docker compose -p gbuzz-integration -f docker-compose.integration.yml exec -T -e PYTHONPATH=/app gcor-proxy python /app/tests/integration/rls_scope.py
+      - name: Verify enterprise boundaries and lexical fallback
+        run: docker compose -p gbuzz-integration -f docker-compose.integration.yml exec -T -e PYTHONPATH=/app gcor-proxy python /app/tests/integration/enterprise_boundaries.py
+      - name: Verify signed Buzz identity and membership revocation
+        run: docker compose -p gbuzz-integration -f docker-compose.integration.yml exec -T -e PYTHONPATH=/app gcor-proxy python /app/tests/integration/nostr_membership.py
+      - name: Verify workspace ingestion and review lifecycle
+        run: docker compose -p gbuzz-integration -f docker-compose.integration.yml exec -T -e PYTHONPATH=/app gcor-proxy python /app/tests/integration/workspace_lifecycle.py
+      - name: Verify chat-native knowledge lifecycle
+        run: docker compose -p gbuzz-integration -f docker-compose.integration.yml exec -T -e PYTHONPATH=/app gcor-proxy python /app/tests/integration/buzz_chat_lifecycle.py
+      - name: Verify real Buzz relay knowledge loop
+        run: |
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml exec -T postgres createdb -U integration integration_relay
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml -f tests/integration/buzz-relay.compose.yml up -d --wait --wait-timeout 120 chat-redis chat-relay
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml run --rm --no-deps -e PGDATABASE=integration_relay migrate
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml exec -T -e PYTHONPATH=/app -e POSTGRES_DB=integration_relay gcor-proxy python /app/tests/integration/buzz_relay_lifecycle.py
       - name: Show service logs after failure
         if: failure()
         run: docker compose -p gbuzz-integration -f docker-compose.integration.yml logs --no-color

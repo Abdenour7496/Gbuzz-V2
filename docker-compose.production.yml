@@ -1,3 +1,6 @@
+# Production hardening for application services. Standalone: combine with
+# docker-compose.yml plus any feature overlays. When the observability profile is
+# enabled, also add docker-compose.observability-production.yml.
 x-app-hardening: &app-hardening
   security_opt:
     - no-new-privileges:true
@@ -35,16 +38,6 @@ services:
     mem_limit: ${GCOR_MCP_MEMORY_LIMIT:-512m}
     cpus: ${GCOR_MCP_CPU_LIMIT:-0.5}
 
-  graphiti-mcp:
-    environment:
-      GRAPHITI_LLM_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY}
-      GRAPHITI_LLM_API_URL: https://api.openai.com/v1
-      GRAPHITI_LLM_MODEL: ${GRAPHITI_PRODUCTION_LLM_MODEL:-gpt-4.1-mini}
-      GRAPHITI_EMBEDDING_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY}
-      GRAPHITI_EMBEDDING_API_URL: https://api.openai.com/v1
-      GRAPHITI_EMBEDDING_MODEL: ${GRAPHITI_PRODUCTION_EMBEDDING_MODEL:-text-embedding-3-small}
-      GRAPHITI_EMBEDDING_DIMS: ${GRAPHITI_PRODUCTION_EMBEDDING_DIMS:-1536}
-
   graphiti-projector:
     <<: *app-hardening
     mem_limit: ${GRAPHITI_PROJECTOR_MEMORY_LIMIT:-512m}
@@ -57,6 +50,16 @@ services:
     mem_limit: ${EVENT_PROJECTOR_MEMORY_LIMIT:-512m}
     cpus: ${EVENT_PROJECTOR_CPU_LIMIT:-0.5}
 
+  docker-socket-proxy:
+    init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: ${DOCKER_SOCKET_PROXY_MEMORY_LIMIT:-64m}
+    cpus: ${DOCKER_SOCKET_PROXY_CPU_LIMIT:-0.25}
+
   recovery-controller:
     init: true
     logging:
@@ -66,8 +69,3 @@ services:
         max-file: "5"
     mem_limit: ${RECOVERY_CONTROLLER_MEMORY_LIMIT:-128m}
     cpus: ${RECOVERY_CONTROLLER_CPU_LIMIT:-0.25}
-
-  alertmanager:
-    volumes: !override
-      - ${ALERTMANAGER_CONFIG_FILE:?set ALERTMANAGER_CONFIG_FILE}:/etc/alertmanager/alertmanager.yml:ro
-    depends_on: !reset []

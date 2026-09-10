@@ -4,6 +4,7 @@ param(
     [string]$LockFile = "docker-compose.production.lock.yml",
     [ValidateRange(1, 99)][int]$MinimumFreePercent = 15,
     [switch]$SkipProjectionGate,
+    [switch]$IncludeGraph,
     [switch]$AllowDirtyTree
 )
 
@@ -33,7 +34,8 @@ try {
     if (-not (Test-Path -LiteralPath $LockFile)) { throw "Missing production lock: $LockFile" }
     $envValues = Read-DotEnv $EnvFile
 
-    $requiredSecrets = @('POSTGRES_PASSWORD','REDIS_PASSWORD','BUZZ_S3_SECRET_KEY','INGEST_WEBHOOK_SECRET','STACK_API_SECRET','OPENAI_API_KEY','GRAFANA_ADMIN_PASSWORD')
+    $requiredSecrets = @('POSTGRES_PASSWORD','GCOR_DB_PASSWORD','GCOR_S3_SECRET_KEY','REDIS_PASSWORD','BUZZ_S3_SECRET_KEY','INGEST_WEBHOOK_SECRET','STACK_API_SECRET','GRAFANA_ADMIN_PASSWORD')
+    if ($envValues['EMBEDDING_BACKEND'] -ne 'ollama') { $requiredSecrets += 'OPENAI_API_KEY' }
     foreach ($name in $requiredSecrets) {
         $value = $envValues[$name]
         if ([string]::IsNullOrWhiteSpace($value) -or $value -match '(?i)change-me|replace|example') {
@@ -67,12 +69,16 @@ try {
         throw "Release candidate has uncommitted or untracked changes."
     }
 
-    & docker compose --env-file $EnvFile -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.production.yml -f $LockFile --profile observability config --quiet
+    $graphArgs = @()
+    if ($IncludeGraph) { $graphArgs = @('-f', 'docker-compose.graph.yml') }
+    & docker compose --env-file $EnvFile -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.production.yml -f docker-compose.observability-production.yml @graphArgs -f $LockFile --profile observability config --quiet
     if ($LASTEXITCODE -ne 0) { throw "Production Compose rendering failed." }
-    & powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-production-pins.ps1 -ComposeFile $LockFile -RequireRegistry
+    $pinArgs = @()
+    if ($IncludeGraph) { $pinArgs += '-IncludeGraph' }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-production-pins.ps1 -ComposeFile $LockFile -RequireRegistry @pinArgs
     if ($LASTEXITCODE -ne 0) { throw "Production image pin verification failed." }
 
-    if (-not $SkipProjectionGate) {
+    if ($IncludeGraph -and -not $SkipProjectionGate) {
         & powershell -NoProfile -ExecutionPolicy Bypass -File scripts/graphiti-projection-release-gate.ps1
         if ($LASTEXITCODE -ne 0) { throw "Graphiti projection backlog is not empty." }
     }

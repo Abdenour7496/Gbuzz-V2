@@ -1,6 +1,27 @@
 groups:
   - name: gbuzz
     rules:
+      - alert: IngestionJobsFailed
+        expr: gcor_ingestion_jobs{status="failed"} > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Ingestion jobs require review in the knowledge workspace
+      - alert: IngestionQueueDelayed
+        expr: gcor_ingestion_oldest_pending_seconds > 600
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Ingestion queue is more than ten minutes behind
+      - alert: IngestionWorkerStalled
+        expr: gcor_ingestion_worker_age_seconds > 600
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Ingestion worker has stopped making progress
       - alert: GbuzzTargetDown
         expr: up{job=~"gcor|buzz-relay|postgres|redis"} == 0
         for: 2m
@@ -29,15 +50,29 @@ groups:
           severity: warning
         annotations:
           summary: GCOR p95 HTTP latency exceeds 2 seconds
+      - alert: GovernancePublicationDelayed
+        expr: gcor_governance_oldest_pending_seconds > 300
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Governance audit publication is more than five minutes behind
+      - alert: GovernancePublicationRetrying
+        expr: gcor_governance_retrying_events > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Governance audit events are retrying object storage publication
       - alert: GraphitiProjectionDeadLetter
-        expr: gcor_graphiti_projection_entries{status="dead_letter"} > 0
+        expr: gcor_graphiti_projection_entries{status="dead_letter"} > 0 and on() gbuzz_recovery_service_healthy{service="graphiti-projector"}
         for: 1m
         labels:
           severity: critical
         annotations:
           summary: Graphiti projection has dead-letter entries
       - alert: GraphitiProjectionLagHigh
-        expr: gcor_graphiti_oldest_unfinished_seconds > 900
+        expr: gcor_graphiti_oldest_unfinished_seconds > 900 and on() gbuzz_recovery_service_healthy{service="graphiti-projector"}
         for: 5m
         labels:
           severity: warning

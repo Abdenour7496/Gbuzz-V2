@@ -2,6 +2,7 @@
 param(
     [switch]$Force,
     [switch]$IncludeObservability,
+    [switch]$IncludeGraph,
     [int]$WaitTimeoutSeconds = 300,
     [string]$AuditPath = ""
 )
@@ -39,6 +40,9 @@ if (-not $PSBoundParameters.ContainsKey("WaitTimeoutSeconds")) {
     $configuredTimeout = Get-DotEnvValue "AUTO_UPDATE_WAIT_TIMEOUT_SECONDS"
     if ($configuredTimeout) { $WaitTimeoutSeconds = [int]$configuredTimeout }
 }
+if (-not $PSBoundParameters.ContainsKey("IncludeGraph")) {
+    $IncludeGraph = (Get-DotEnvValue "AUTO_UPDATE_INCLUDE_GRAPH") -eq "true"
+}
 if ([string]::IsNullOrWhiteSpace($AuditPath)) {
     $AuditPath = Join-Path $repoRoot "backups\stack-update-audit.jsonl"
 }
@@ -57,6 +61,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Docker Engine is unavailable." }
 
         $composeArgs = @("compose", "-f", "docker-compose.yml")
+        if ($IncludeGraph) { $composeArgs += @("-f", "docker-compose.graph.yml") }
         if ($IncludeObservability) {
             $composeArgs += @("-f", "docker-compose.observability.yml", "--profile", "observability")
         }
@@ -70,14 +75,16 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Image build failed." }
 
         Write-Host "Applying the update and waiting for health checks..."
-        & docker @composeArgs up -d --remove-orphans --wait --wait-timeout $WaitTimeoutSeconds
+        & docker @composeArgs up -d --wait --wait-timeout $WaitTimeoutSeconds
         if ($LASTEXITCODE -ne 0) { throw "Updated stack did not become healthy within $WaitTimeoutSeconds seconds." }
 
-        Write-Host "Waiting for the Graphiti projection release gate..."
-        & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "graphiti-projection-release-gate.ps1") -WaitSeconds $WaitTimeoutSeconds
-        if ($LASTEXITCODE -ne 0) { throw "Graphiti projection release gate failed." }
+        if ($IncludeGraph) {
+            Write-Host "Waiting for the Graphiti projection release gate..."
+            & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "graphiti-projection-release-gate.ps1") -WaitSeconds $WaitTimeoutSeconds
+            if ($LASTEXITCODE -ne 0) { throw "Graphiti projection release gate failed." }
+        }
 
-        $message = "Stack update completed; observability=$IncludeObservability"
+        $message = "Stack update completed; observability=$IncludeObservability; graph=$IncludeGraph"
         Write-Audit "success" $message
         Write-Host $message
     }

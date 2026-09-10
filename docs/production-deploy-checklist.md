@@ -21,7 +21,11 @@ approval to expose a service publicly or to replace production secrets.
 - [ ] External endpoints terminate behind deployment-approved TLS and authentication.
 - [ ] GCOR proxy, GCOR MCP, Graphiti MCP, and recovery-controller endpoints are not publicly reachable.
 - [ ] PostgreSQL and MinIO backups completed, checksums were recorded, and the latest restore exercise met the RTO/RPO.
-- [ ] Migration `0006_graphiti_bounded_episodes.sql` and all earlier unapplied migrations passed in staging.
+- [ ] `GCOR_DB_USER`/`GCOR_DB_PASSWORD` are set; the running proxy reports `rolsuper`, `rolbypassrls` and `rolcreaterole` as false (see production safeguards).
+- [ ] `GCOR_S3_ACCESS_KEY`/`GCOR_S3_SECRET_KEY`/`GCOR_CHANNEL_BUCKET_PREFIX` are set and `mc admin user info` shows only the `gcor-service` policy; `docker compose ps` shows the socket mounted only in `docker-socket-proxy`.
+- [ ] Migration `0012_row_level_security.sql` and all earlier unapplied migrations passed in staging; `SELECT filename FROM gcor.schema_migrations` lists every file.
+- [ ] Governance publication backlog is drained or retained for retry; the approved rollback plan preserves the outbox table.
+- [ ] Remote URL fetches reject private/metadata destinations, environment proxies, and DNS rebinding in staging.
 - [ ] The migration owner recorded the forward-only/rollback decision and authoritative-data recovery point.
 - [ ] Alertmanager has a tested deployment receiver and an acknowledged test notification.
 - [ ] Disk-capacity, readiness, error-rate, latency, projector-lag, and recovery-budget alerts are active.
@@ -32,12 +36,14 @@ approval to expose a service publicly or to replace production secrets.
 - [ ] Record the pre-deploy PostgreSQL migration version and Graphiti dead-letter/in-flight counts.
 - [ ] Run migrations exactly once as the designated one-shot migration owner.
 - [ ] Confirm the migration container exits `0` before starting application services.
-- [ ] Deploy the immutable lock overlay with `docker-compose.production.yml`.
-- [ ] Confirm PostgreSQL, Redis, MinIO, Ollama, FalkorDB, relay, GCOR, Graphiti, and recovery-controller health.
+- [ ] Deploy the immutable lock overlay with `docker-compose.production.yml`. Canonical file order: `docker-compose.yml`, `docker-compose.safeguards.override.json` (if a guarded rollout created it), feature overlays (`enterprise`, `buzz`, `graph` + `graph-production`), `docker-compose.observability.yml` + `docker-compose.observability-production.yml` with `--profile observability`, then `docker-compose.production.yml` and the lock file last.
+- [ ] Include the enterprise and observability overlays when operating those enabled services; preserve the managed core image override and do not remove their containers as orphans.
+- [ ] Verify signed workspace role boundaries, ingestion worker heartbeat and document reader restrictions.
+- [ ] Confirm PostgreSQL, Redis, MinIO, Ollama, relay, GCOR, and recovery-controller health. Check FalkorDB and Graphiti only when the optional graph extension is enabled.
 - [ ] Verify relay readiness, GCOR health, recovery status, Prometheus readiness, and Alertmanager readiness.
 - [ ] Run an authenticated ingestion/retrieval smoke test in a non-sensitive deployment channel.
 - [ ] Confirm the recovery bundle exists in MinIO and retrieval returns provenance-bearing citations.
-- [ ] Run `scripts/graphiti-projection-release-gate.ps1`; it must report zero `pending`, `retryable`, `in_flight`, and `dead_letter` entries.
+- [ ] For graph-enabled deployments, run `scripts/graphiti-projection-release-gate.ps1`; it must report zero `pending`, `retryable`, `in_flight`, and `dead_letter` entries. Core-only deployments retain pending projection work and skip this gate. See [optional graph](optional-graph.md).
 - [ ] Watch readiness, error rate, latency, disk, projector lag, and recovery actions for at least 15 minutes.
 
 ## Rollback triggers
@@ -47,7 +53,7 @@ Rollback or stop promotion if any of the following occurs:
 - A migration fails or authoritative-data validation differs from the pre-deploy record.
 - Relay, GCOR, PostgreSQL, or MinIO is not healthy within 10 minutes.
 - The authenticated ingestion/retrieval smoke test fails.
-- Graphiti `dead_letter` is non-zero or projector lag grows continuously for 10 minutes.
+- When the graph extension is enabled, Graphiti `dead_letter` is non-zero or projector lag grows continuously for 10 minutes.
 - Any service consumes the recovery action budget or repeats unhealthy/restart cycles.
 - GCOR HTTP 5xx rate exceeds 5% for 5 minutes or p95 HTTP latency exceeds 2 seconds for 5 minutes.
 - Security boundaries expose a private service or authentication cannot be verified.

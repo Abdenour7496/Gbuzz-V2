@@ -1,0 +1,8 @@
+{
+  "services": {
+    "gcor-proxy": {
+      "pull_policy": "never",
+      "image": "gbuzz-gcor-safeguards:release-id"
+    }
+  }
+}
