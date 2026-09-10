@@ -1,0 +1,22 @@
+services:
+  buzz-knowledge:
+    extends:
+      file: docker-compose.yml
+      service: gcor-proxy
+    image: gbuzz-buzz-knowledge
+    pull_policy: build
+    command: ["python", "buzz_chat.py"]
+    ports: !reset []
+    labels: !reset {}
+    environment:
+      GCOR_ACCESS_MODE: legacy
+      GCOR_INGESTION_WORKER: "false"
+      BUZZ_KNOWLEDGE_PRIVATE_KEY: ${BUZZ_KNOWLEDGE_PRIVATE_KEY:?configure dedicated Knowledge agent key}
+      BUZZ_KNOWLEDGE_RELAY_URL: ws://relay:3000
+      BUZZ_KNOWLEDGE_AUTH_URL: ${BUZZ_KNOWLEDGE_AUTH_URL:-ws://127.0.0.1:3000}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,time; assert time.time()-os.stat('/tmp/buzz-chat-heartbeat').st_mtime<600"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 60s

@@ -1,0 +1,27 @@
+services:
+  chat-redis:
+    image: redis:7-alpine
+    networks: [integration]
+  chat-relay:
+    image: ghcr.io/block/buzz:0.2.1
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8080; printf \"GET /_readiness HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n\" >&3; grep -q \"200 OK\" <&3'"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    environment:
+      DATABASE_URL: postgres://integration:integration@postgres:5432/integration_relay
+      REDIS_URL: redis://chat-redis:6379
+      BUZZ_AUTO_MIGRATE: "true"
+      BUZZ_BIND_ADDR: 0.0.0.0:3000
+      BUZZ_RELAY_PUBLIC_URL: http://chat-relay:3000
+      RELAY_URL: ws://chat-relay:3000
+      BUZZ_RELAY_PRIVATE_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+      BUZZ_S3_ENDPOINT: http://minio:9000
+      BUZZ_S3_ACCESS_KEY: integration
+      BUZZ_S3_SECRET_KEY: integration-secret
+      BUZZ_S3_BUCKET: integration
+      BUZZ_S3_ADDRESSING_STYLE: path
+      BUZZ_GIT_REPO_PATH: /tmp/git
+      BUZZ_GIT_CONFORMANCE_PROBE: "false"
+    networks: [integration]
