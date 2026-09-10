@@ -1,6 +1,6 @@
 # ADR-0003: Bounded stack health and recovery controller
 
-**Status:** Accepted
+**Status:** Accepted (amended 2026-09-10: the controller no longer mounts the Docker socket; it reaches a filtering `docker-socket-proxy` with `CONTAINERS=1 ALLOW_RESTARTS=1 POST=0` over an internal `control-net` — see production safeguards)
 **Date:** 2026-08-15
 **Deciders:** Gbuzz maintainers
 

@@ -27,11 +27,29 @@ class UnixHTTPConnection(http.client.HTTPConnection):
 
 
 class DockerClient:
-    def __init__(self, socket_path: str = "/var/run/docker.sock"):
-        self.socket_path = socket_path
+    """Docker Engine API over a Unix socket or, preferably, a filtering TCP proxy.
+
+    ``endpoint`` is a socket path (``/var/run/docker.sock``) or an ``http://host:port``
+    URL such as the docker-socket-proxy service. Only ``GET /containers/*`` and
+    ``POST /containers/{id}/restart`` are ever issued, so the proxy can be configured
+    with CONTAINERS=1 ALLOW_RESTARTS=1 POST=0 and nothing else.
+    """
+
+    def __init__(self, endpoint: str = "/var/run/docker.sock"):
+        self.endpoint = endpoint
+        self.socket_path = endpoint  # backwards compatibility for callers/tests
+
+    def _connection(self, timeout: float) -> http.client.HTTPConnection:
+        if self.endpoint.startswith("http://"):
+            host = self.endpoint[len("http://"):].rstrip("/")
+            return http.client.HTTPConnection(host, timeout=timeout)
+        if self.endpoint.startswith("tcp://"):
+            host = self.endpoint[len("tcp://"):].rstrip("/")
+            return http.client.HTTPConnection(host, timeout=timeout)
+        return UnixHTTPConnection(self.endpoint, timeout=timeout)
 
     def request(self, method: str, path: str, timeout: float = 10) -> Any:
-        connection = UnixHTTPConnection(self.socket_path, timeout=timeout)
+        connection = self._connection(timeout)
         try:
             connection.request(method, path, headers={"Host": "localhost"})
             response = connection.getresponse()
@@ -169,9 +187,12 @@ class Controller:
                 state = state_data.get("Status", "unknown")
                 health = (state_data.get("Health") or {}).get("Status", "none")
                 healthy = state == "running" and health in {"healthy", "none"}
-                failures = self.policy.observe(service, healthy)
+                # Compose creates containers before their dependencies are ready.
+                # Starting them here bypasses that ordering and consumes the restart budget.
+                initializing = state == "created" or (state == "running" and health == "starting")
+                failures = self.policy.observe(service, healthy or initializing)
                 status = ServiceStatus(service, container["Id"][:12], state, health, action, failures, now, self.policy.last_action.get(service))
-                allowed, reason = self.policy.decision(service, action, now)
+                allowed, reason = (False, "initializing") if initializing else self.policy.decision(service, action, now)
                 if not healthy and failures == self.policy.failure_threshold:
                     self.audit({"event": "failure_threshold_reached", "service": service, "state": state, "health": health, "action": action})
                 if allowed:
@@ -282,7 +303,7 @@ def main() -> None:
         positive_int("RECOVERY_ACTION_WINDOW_SECONDS", 3600),
     )
     controller = Controller(
-        DockerClient(os.getenv("DOCKER_SOCKET", "/var/run/docker.sock")), policy,
+        DockerClient(os.getenv("DOCKER_HOST") or os.getenv("DOCKER_SOCKET", "/var/run/docker.sock")), policy,
         os.getenv("RECOVERY_STACK_ID", "gbuzz"), Path(os.getenv("RECOVERY_AUDIT_PATH", "/var/lib/gbuzz-recovery/audit.jsonl")),
         positive_int("RECOVERY_RESTART_TIMEOUT_SECONDS", 20),
     )
