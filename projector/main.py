@@ -120,29 +120,34 @@ async def process_event(pool: asyncpg.Pool, client: httpx.AsyncClient, row: asyn
 
 async def run() -> None:
     pool = await asyncpg.create_pool(**POSTGRES, min_size=1, max_size=3)
-    timeout = httpx.Timeout(90, connect=10)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-        while True:
-            rows = await pool.fetch(
-                """SELECT encode(e.id,'hex') AS event_id,e.kind,e.created_at,e.channel_id::text,
-                          c.name AS channel_name,c.visibility::text AS visibility,encode(e.pubkey,'hex') AS author_pubkey,
-                          e.content,e.tags
-                   FROM events e JOIN channels c ON c.id=e.channel_id
-                   LEFT JOIN gcor.event_projection p ON p.event_id=encode(e.id,'hex')
-                   WHERE e.deleted_at IS NULL AND e.channel_id IS NOT NULL AND e.kind=ANY($1::int[])
-                     AND (p.event_id IS NULL OR (p.status='failed' AND p.updated_at < now()-interval '10 seconds'))
-                   ORDER BY e.created_at,e.id LIMIT $2""",
-                KINDS, BATCH_SIZE,
-            )
-            for row in rows:
-                try:
-                    await process_event(pool, client, row)
-                except Exception as error:
-                    await pool.execute(
-                        """UPDATE gcor.event_projection SET status='failed',error=$2,updated_at=now() WHERE event_id=$1""",
-                        row["event_id"], str(error)[:2000],
-                    )
-            await asyncio.sleep(POLL_SECONDS)
+    try:
+        timeout = httpx.Timeout(90, connect=10)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            while True:
+                __import__('pathlib').Path('/tmp/projector-heartbeat').touch()
+                rows = await pool.fetch(
+                    """SELECT encode(e.id,'hex') AS event_id,e.kind,e.created_at,e.channel_id::text,
+                              c.name AS channel_name,c.visibility::text AS visibility,encode(e.pubkey,'hex') AS author_pubkey,
+                              e.content,e.tags
+                       FROM events e JOIN channels c ON c.id=e.channel_id
+                       LEFT JOIN gcor.event_projection p ON p.event_id=encode(e.id,'hex')
+                       WHERE e.deleted_at IS NULL AND e.channel_id IS NOT NULL AND e.kind=ANY($1::int[])
+                         AND (p.event_id IS NULL OR (p.status='failed' AND p.updated_at < now()-interval '10 seconds'))
+                       ORDER BY e.created_at,e.id LIMIT $2""",
+                    KINDS, BATCH_SIZE,
+                )
+                for row in rows:
+                    __import__('pathlib').Path('/tmp/projector-heartbeat').touch()
+                    try:
+                        await process_event(pool, client, row)
+                    except Exception as error:
+                        await pool.execute(
+                            """UPDATE gcor.event_projection SET status='failed',error=$2,updated_at=now() WHERE event_id=$1""",
+                            row["event_id"], str(error)[:2000],
+                        )
+                await asyncio.sleep(POLL_SECONDS)
+    finally:
+        await pool.close()
 
 
 if __name__ == "__main__":

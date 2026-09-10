@@ -1,0 +1,15 @@
+# Read-only enterprise API boundary. Use with the base compose file.
+# Uses Buzz's existing Nostr public keys and channel memberships.
+services:
+  gcor-enterprise:
+    extends:
+      file: docker-compose.yml
+      service: gcor-proxy
+    ports: !override
+      - "127.0.0.1:${GCOR_ENTERPRISE_PORT:-5011}:5001"
+    labels: !reset {}
+    environment:
+      GCOR_ACCESS_MODE: buzz
+      GCOR_PUBLIC_ORIGIN: ${GCOR_PUBLIC_ORIGIN:-http://127.0.0.1:5011}
+      GCOR_SCOPED_CREDENTIALS: "[]"
+      GRAPHITI_RETRIEVAL_ENABLED: ${GRAPHITI_RETRIEVAL_ENABLED:-false}

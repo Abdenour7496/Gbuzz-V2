@@ -7,4 +7,5 @@ COPY graphiti-projector/main.py .
 COPY graphiti-projector/control.py .
 COPY graphiti-projector/test_main.py .
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 CMD python -c "import os,time; assert time.time()-os.stat('/tmp/projector-heartbeat').st_mtime<600"
 CMD ["python", "main.py"]

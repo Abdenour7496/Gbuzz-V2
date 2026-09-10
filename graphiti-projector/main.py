@@ -309,6 +309,7 @@ async def project_forever(pool: asyncpg.Pool) -> None:
             delete_tool_name, delete_accepted = choose_delete_tool(tools)
             list_tool_name, list_accepted = choose_episode_list_tool(tools)
             while True:
+                __import__('pathlib').Path('/tmp/projector-heartbeat').touch()
                 await reconcile_episodes(
                     pool, session, list_tool_name, list_accepted
                 )
