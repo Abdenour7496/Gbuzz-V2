@@ -11,7 +11,11 @@ WEBHOOK_SECRET = os.getenv("INGEST_WEBHOOK_SECRET", "")
 STACK_API_SECRET = os.getenv("STACK_API_SECRET", "") or WEBHOOK_SECRET
 RECOVERY_CONTROLLER_URL = os.getenv("RECOVERY_CONTROLLER_URL", "http://recovery-controller:8080").rstrip("/")
 
-mcp = FastMCP("mcp-postgres-gcor")
+mcp = FastMCP(
+    "mcp-postgres-gcor",
+    host=os.getenv("FASTMCP_HOST", "0.0.0.0"),
+    port=int(os.getenv("FASTMCP_PORT", "8765")),
+)
 
 
 @mcp.tool()
@@ -23,8 +27,10 @@ async def get_stack_health() -> dict[str, Any]:
         return response.json()
 
 
-async def proxy_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+async def proxy_post(path: str, payload: dict[str, Any], idempotency_key: str | None = None) -> dict[str, Any]:
     headers = {"X-Gcor-Webhook-Secret": STACK_API_SECRET} if STACK_API_SECRET else {}
+    if idempotency_key is not None:
+        headers["Idempotency-Key"] = idempotency_key
     async with httpx.AsyncClient(timeout=90) as client:
         response = await client.post(f"{PROXY_URL}{path}", json=payload, headers=headers)
         response.raise_for_status()
@@ -287,6 +293,7 @@ async def approve_knowledge(
     target_source_uri: str | None = None,
     approved_by: str | None = None,
     note: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Approve proposed knowledge so it becomes visible in approved-only ask flows."""
     return await proxy_post("/api/knowledge/approve", {
@@ -294,7 +301,7 @@ async def approve_knowledge(
         "target_source_uri": target_source_uri,
         "approved_by": approved_by,
         "note": note,
-    })
+    }, idempotency_key=idempotency_key)
 
 
 @mcp.tool()
@@ -306,6 +313,7 @@ async def transition_knowledge(
     note: str | None = None,
     superseded_by_document_id: str | None = None,
     superseded_by_source_uri: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Transition knowledge lifecycle state (approved, superseded, archived, rejected, proposed)."""
     return await proxy_post("/api/knowledge/transition", {
@@ -316,7 +324,13 @@ async def transition_knowledge(
         "note": note,
         "superseded_by_document_id": superseded_by_document_id,
         "superseded_by_source_uri": superseded_by_source_uri,
-    })
+    }, idempotency_key=idempotency_key)
+
+
+@mcp.tool()
+async def get_governance_outbox() -> dict[str, Any]:
+    """Inspect pending, published, and retrying governance audit events."""
+    return await proxy_get("/api/governance/outbox")
 
 
 if __name__ == "__main__":

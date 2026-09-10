@@ -1,4 +1,7 @@
 .git
+.venv*/
+node_modules/
+clients/
 .github
 .env
 .env.*
@@ -11,5 +14,9 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 backups/
+*.zip
+*.tar
+*.tgz
+*.dump
+*.bak
 docs/
-

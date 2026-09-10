@@ -1,10 +1,15 @@
 .env
+.venv*/
 __pycache__/
+node_modules/
 *.py[cod]
 docker-compose.production.lock.yml
+docker-compose.safeguards.override.json
 backups/
 *.dump
 *.zip
 *.sql
+!migrations/*.sql
 release-evidence-*.md
+!docs/release-evidence-*.md
 observability/alertmanager.production.yml

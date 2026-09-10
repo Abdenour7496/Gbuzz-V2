@@ -57,6 +57,21 @@ class RecoveryPolicyTest(unittest.TestCase):
 
 
 class ControllerTest(unittest.TestCase):
+    def test_initializing_containers_do_not_bypass_dependency_order(self):
+        for state, health in (("created", "none"), ("running", "starting")):
+            docker = FakeDocker([container("proxy", state=state, health=health)])
+            with tempfile.TemporaryDirectory() as directory:
+                controller = main.Controller(docker, main.RecoveryPolicy(2, 300, 3, 3600), "gbuzz", Path(directory) / "audit.jsonl", 20)
+                for tick in range(10):
+                    controller.poll(1000 + tick * 15)
+                self.assertEqual([], docker.restarts)
+                self.assertEqual(0, controller.policy.failures["proxy"])
+                docker.containers = [container("proxy", health="unhealthy")]
+                controller.poll(1200)
+                self.assertEqual([], docker.restarts)
+                controller.poll(1215)
+                self.assertEqual(1, len(docker.restarts))
+
     def test_restarts_only_allowlisted_unhealthy_service_and_audits(self):
         docker = FakeDocker([container("proxy", health="unhealthy"), container("postgres", health="unhealthy", action="monitor")])
         with tempfile.TemporaryDirectory() as directory:
