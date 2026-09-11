@@ -9,6 +9,7 @@ COPY proxy/egress.py .
 COPY proxy/governance_outbox.py .
 COPY proxy/governance_service.py .
 COPY proxy/access_policy.py .
+COPY proxy/db_scope.py .
 COPY proxy/nostr_auth.py .
 COPY proxy/enterprise_workflows.py .
 COPY proxy/document_parsing.py .

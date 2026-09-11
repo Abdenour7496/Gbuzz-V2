@@ -1171,6 +1171,7 @@ async def ingest_payload(
     metadata: dict[str, Any],
     session_record: dict[str, Any] | None = None,
     preserve_existing: bool = False,
+    archive_only: bool = False,
 ) -> dict[str, Any]:
     if len(content) > MAX_INGEST_FILE_BYTES:
         raise HTTPException(413, f"payload exceeds MAX_INGEST_FILE_BYTES ({MAX_INGEST_FILE_BYTES})")
@@ -1218,8 +1219,8 @@ async def ingest_payload(
         chunks = chunk_text(content_text)
         if not chunks:
             raise ValueError("The supplied content contains no extractable text")
-        vectors = await embed(chunks)
-        if len(vectors) != len(chunks):
+        vectors = [] if archive_only else await embed(chunks)
+        if not archive_only and len(vectors) != len(chunks):
             raise ValueError("Embedding provider returned an unexpected number of vectors")
     except Exception as error:
         error_text = str(getattr(error, "detail", error))[:2000]
@@ -1315,7 +1316,39 @@ async def ingest_payload(
         "original_key": original_key,
         "markdown_key": markdown_key,
         "record_key": record_key,
+        "archive_only": archive_only,
     })
+
+    if archive_only:
+        manifest = build_record_manifest(
+            record_id=record_id, document_id=None, title=title, source_uri=source_uri,
+            media_type=media_type, content_sha256=digest, markdown_sha256=markdown_digest,
+            content_bytes=len(content), bucket=bucket_name, original_key=original_key,
+            markdown_key=markdown_key, record_key=record_key, access_level=access_level,
+            agent_id=agent_id, channel_name=channel_name, channel_id=channel_id,
+            event_id=event_id, event_kind=event_kind, event_timestamp=event_timestamp,
+            author_pubkey=author_pubkey, file_url=file_url, file_name=file_name,
+            metadata=metadata, status="archived",
+        )
+        await __import__("asyncio").to_thread(
+            request.app.state.s3.put_object, Bucket=bucket_name, Key=record_key,
+            Body=json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+            ContentType="application/json", Metadata={"record_id": str(record_id), "status": "archived"},
+        )
+        await request.app.state.pool.execute(
+            """INSERT INTO gcor.ingestion_records
+               (id, document_id, content_sha256, bucket, original_key, markdown_key, record_key,
+                channel_id, channel_name, event_id, event_kind, source_uri, status, metadata)
+               VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'archived',$12::jsonb)""",
+            record_id, digest, bucket_name, original_key, markdown_key, record_key,
+            channel_id, channel_name, event_id, event_kind, source_uri, json.dumps(metadata),
+        )
+        return {
+            "document_id": None, "record_id": str(record_id), "deduplicated": False,
+            "status": "archived", "archive_only": True, "chunks": 0,
+            "bucket": bucket_name, "object_key": original_key, "original_key": original_key,
+            "markdown_key": markdown_key, "record_key": record_key,
+        }
 
     async with request.app.state.pool.acquire() as connection:
         async with connection.transaction():
@@ -1776,6 +1809,7 @@ async def ingest_document(
     event_timestamp: Annotated[str | None, Form()] = None,
     author_pubkey: Annotated[str | None, Form()] = None,
     metadata_json: Annotated[str | None, Form()] = None,
+    archive_only: Annotated[bool, Form()] = False,
     x_gcor_webhook_secret: Annotated[str | None, Header()] = None,
 ):
     verify_stack_api_secret(x_gcor_webhook_secret)
@@ -1925,6 +1959,7 @@ async def ingest_document(
         file_name=file_name or uploaded_filename,
         metadata=dict(metadata),
         session_record=session_record,
+        archive_only=archive_only,
     )
 
     replay_attachments = attachments + session_attachments

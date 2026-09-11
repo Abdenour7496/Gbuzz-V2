@@ -4,8 +4,9 @@ import json
 import unittest
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
@@ -77,6 +78,41 @@ class ArchivalHelpersTest(unittest.TestCase):
         schema = json.loads((Path(main.SCHEMAS_DIR) / "ingestion-record.schema.json").read_text(encoding="utf-8"))
         self.assertEqual([], list(Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(manifest)))
         self.assertIsNone(manifest["document_id"])
+
+
+class ArchiveOnlyIngestTest(unittest.IsolatedAsyncioTestCase):
+    async def test_archive_only_persists_bundle_without_embedding_or_document(self):
+        s3 = MagicMock()
+        pool = SimpleNamespace(execute=AsyncMock())
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(s3=s3, pool=pool)))
+
+        with patch.object(main, "ensure_bucket_name", AsyncMock()), patch.object(main, "embed", AsyncMock()) as embed:
+            result = await main.ingest_payload(
+                request,
+                content=b"hi",
+                media_type="text/plain",
+                title="General message",
+                access_level="private",
+                agent_id=None,
+                source_uri="buzz://event/test-event",
+                channel_name="General",
+                channel_id="channel-1",
+                event_id="test-event",
+                event_kind="buzz.kind.9",
+                event_timestamp="2026-09-11T00:00:00Z",
+                author_pubkey="author",
+                file_url=None,
+                file_name=None,
+                metadata={"knowledge_disposition": "archived"},
+                archive_only=True,
+            )
+
+        embed.assert_not_awaited()
+        self.assertEqual("archived", result["status"])
+        self.assertIsNone(result["document_id"])
+        self.assertEqual(3, s3.put_object.call_count)
+        pool.execute.assert_awaited_once()
+        self.assertIn("'archived'", pool.execute.await_args.args[0])
 
 
 

@@ -429,6 +429,8 @@ The `gcor-event-projector` service starts with the stack and reads the relay's s
 
 This replaces the need to install the example workflow for standard message and file capture. The workflow template remains available for deployments that prefer explicit workflow routing. Configure projector behavior with `PROJECTOR_EVENT_KINDS`, `PROJECTOR_POLL_SECONDS`, and `PROJECTOR_BATCH_SIZE`.
 
+`PROJECTOR_KNOWLEDGE_MODE` controls semantic promotion without weakening the audit archive. The default, `selective`, archives every message to its channel MinIO bucket but only indexes messages with explicit knowledge signals or substantive content; attachments are always indexed. Use `all` to restore index-everything behavior or `archive_only` to retain messages without promoting any message text. Each bundle records the disposition and reason in metadata.
+
 ### Local Grounded Generation
 
 `/api/ask` and `/api/ask/reply` use the local `GENERATION_MODEL` through Ollama to synthesize an evidence-only answer with inline numbered citations. If generation is unavailable, the endpoints retain their previous ranked-excerpt response, preserving API availability and compatibility. The default local model is `qwen2.5:1.5b`.

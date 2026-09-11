@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 from typing import Any
 from urllib.parse import urlparse
 
@@ -21,6 +22,41 @@ SECRET = os.getenv("STACK_API_SECRET", "") or os.environ["INGEST_WEBHOOK_SECRET"
 POLL_SECONDS = float(os.getenv("PROJECTOR_POLL_SECONDS", "2"))
 BATCH_SIZE = int(os.getenv("PROJECTOR_BATCH_SIZE", "50"))
 KINDS = [int(value) for value in os.getenv("PROJECTOR_EVENT_KINDS", "9,40002,45001,45003").split(",") if value.strip()]
+KNOWLEDGE_MODE = os.getenv("PROJECTOR_KNOWLEDGE_MODE", "selective").strip().casefold()
+
+LOW_VALUE_MESSAGES = {
+    "ack", "acknowledged", "cool", "done", "got it", "great", "hello", "hey", "hi",
+    "ok", "okay", "thanks", "thank you", "understood", "yes", "no",
+}
+KNOWLEDGE_SIGNALS = re.compile(
+    r"\b(action|approved?|blocker|decision|finding|incident|issue|lesson|mitigation|"
+    r"owner|policy|recommendation|requirement|resolution|risk|root cause|status|"
+    r"tenant health|todo|next step)\b",
+    re.IGNORECASE,
+)
+
+
+def knowledge_disposition(content: str) -> tuple[bool, str]:
+    """Return whether a channel message belongs in semantic retrieval.
+
+    All messages are still archived. This decision only controls promotion into
+    the retrieval index.
+    """
+    normalized = " ".join(content.split()).strip()
+    comparable = re.sub(r"^@[\w.-]+\s*", "", normalized).strip(" .,!?:;").casefold()
+    if KNOWLEDGE_MODE == "all":
+        return True, "mode_all"
+    if KNOWLEDGE_MODE == "archive_only":
+        return False, "mode_archive_only"
+    if not comparable:
+        return False, "empty_or_mention_only"
+    if comparable in LOW_VALUE_MESSAGES:
+        return False, "conversational_chatter"
+    if KNOWLEDGE_SIGNALS.search(comparable):
+        return True, "knowledge_signal"
+    if len(comparable) >= 80 or len(comparable.split()) >= 14:
+        return True, "substantive_message"
+    return False, "short_without_knowledge_signal"
 
 
 def parse_attachments(tags: Any) -> list[dict[str, str]]:
@@ -88,11 +124,19 @@ async def process_event(pool: asyncpg.Pool, client: httpx.AsyncClient, row: asyn
     content = (row["content"] or "").strip()
     attachments = parse_attachments(row["tags"])
     if content:
+        promote, reason = knowledge_disposition(content)
         last_result = await post_ingest(client, common | {
             "text": content,
             "title": f"{row['channel_name'] or row['channel_id']} message",
             "source_uri": f"buzz://event/{event_id}",
-            "metadata_json": json.dumps({"record_type": "buzz_event", "projected": True, "buzz_event_kind": row["kind"]}),
+            "archive_only": "false" if promote else "true",
+            "metadata_json": json.dumps({
+                "record_type": "buzz_event",
+                "projected": True,
+                "buzz_event_kind": row["kind"],
+                "knowledge_disposition": "indexed" if promote else "archived",
+                "knowledge_reason": reason,
+            }),
         })
     for index, attachment in enumerate(attachments):
         media_response = await client.get(internal_media_url(attachment["url"]))
@@ -108,7 +152,7 @@ async def process_event(pool: asyncpg.Pool, client: httpx.AsyncClient, row: asyn
             },
             files={"file": (file_name, media_response.content, media_type)},
         )
-    status = "indexed" if last_result else "skipped"
+    status = "indexed" if last_result and last_result.get("status", "indexed") == "indexed" else "skipped"
     document_id = last_result.get("document_id") if last_result else None
     record_id = last_result.get("record_id") if last_result else None
     await pool.execute(

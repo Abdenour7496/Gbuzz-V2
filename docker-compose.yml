@@ -418,6 +418,7 @@ services:
       PROJECTOR_POLL_SECONDS: ${PROJECTOR_POLL_SECONDS:-2}
       PROJECTOR_BATCH_SIZE: ${PROJECTOR_BATCH_SIZE:-50}
       PROJECTOR_EVENT_KINDS: ${PROJECTOR_EVENT_KINDS:-9,40002,45001,45003}
+      PROJECTOR_KNOWLEDGE_MODE: ${PROJECTOR_KNOWLEDGE_MODE:-selective}
     labels:
       com.gbuzz.recovery.enabled: "true"
       com.gbuzz.recovery.stack: ${RECOVERY_STACK_ID:-gbuzz}
