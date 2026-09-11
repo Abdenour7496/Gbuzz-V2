@@ -14,6 +14,7 @@ COPY proxy/nostr_auth.py .
 COPY proxy/enterprise_workflows.py .
 COPY proxy/document_parsing.py .
 COPY proxy/graph_retrieval.py .
+COPY proxy/audit_pack.py .
 COPY proxy/buzz_chat.py .
 COPY proxy/buzz_cards.py .
 COPY proxy/buzz_wiki.py .

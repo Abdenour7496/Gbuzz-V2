@@ -28,6 +28,7 @@ services:
     <<: *app-hardening
     environment:
       STACK_API_SECRET: ${STACK_API_SECRET:?set STACK_API_SECRET}
+      AUDIT_PACK_SIGNING_KEY: ${AUDIT_PACK_SIGNING_KEY:?set AUDIT_PACK_SIGNING_KEY}
       ENFORCE_STACK_API_SECRET: "true"
       REMOTE_FETCH_BLOCK_PRIVATE_HOSTS: "true"
     mem_limit: ${GCOR_PROXY_MEMORY_LIMIT:-1g}

@@ -23,7 +23,7 @@ class Principal:
 
 WORKSPACE_PATHS = {'/api/workspace/channels', '/api/workspace/documents', '/api/workspace/detail',
                    '/api/workspace/review', '/api/workspace/feedback', '/api/workspace/jobs',
-                   '/api/workspace/submit', '/api/workspace/job-action'}
+                   '/api/workspace/submit', '/api/workspace/job-action', '/api/audit-packs'}
 READ_PATHS = {'/api/ask', '/api/ask/reply', '/api/retrieve'}
 
 

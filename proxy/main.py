@@ -36,6 +36,7 @@ from db_scope import ScopedPool
 from enterprise_workflows import router as workspace_router, worker as ingestion_worker
 from document_parsing import extract as parse_document
 from graph_retrieval import candidates as graph_candidates
+from audit_pack import router as audit_pack_router
 
 POSTGRES_DSN = os.getenv("POSTGRES_DSN")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
@@ -1096,6 +1097,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="gcor-proxy", version="0.1.0", lifespan=lifespan)
 app.include_router(workspace_router)
+app.include_router(audit_pack_router)
 
 @app.get('/workspace',include_in_schema=False)
 async def workspace_page():

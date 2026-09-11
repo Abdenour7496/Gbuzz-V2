@@ -76,6 +76,7 @@ services:
       OLLAMA_HOST: http://mock-ollama:11434
       INGEST_WEBHOOK_SECRET: integration-secret
       STACK_API_SECRET: integration-secret
+      AUDIT_PACK_SIGNING_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       ENFORCE_STACK_API_SECRET: "true"
       SCHEMAS_DIR: /app/schemas
     ports:
