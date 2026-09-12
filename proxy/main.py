@@ -35,6 +35,7 @@ from access_policy import ScopedAccess, current_principal
 from db_scope import ScopedPool
 from enterprise_workflows import router as workspace_router, worker as ingestion_worker
 from document_parsing import extract as parse_document
+from parser_client import extract as parse_isolated_document
 from graph_retrieval import candidates as graph_candidates
 from audit_pack import router as audit_pack_router
 
@@ -250,6 +251,8 @@ def chunk_text(text: str) -> list[str]:
 
 
 def extract_text(content: bytes, media_type: str) -> str:
+    if os.getenv("PARSER_SOCKET_PATH"):
+        return parse_isolated_document(content, media_type)
     return parse_document(content, media_type)
 
 
@@ -1548,7 +1551,7 @@ async def run_retrieval_query(
             WITH search_terms AS (
                 SELECT websearch_to_tsquery('english', $7) AS query
             ), semantic_candidates AS (
-                SELECT c.id, c.node_id, c.document_id, c.ordinal, c.content, c.embedding, d.title, d.source_uri, d.created_at, d.metadata, c.search_vector
+                SELECT c.id, c.node_id, c.document_id, c.ordinal, c.content, c.embedding, d.title, d.source_uri, d.created_at, d.metadata, d.content_sha256, c.search_vector
                 FROM gcor.chunks c
                 JOIN gcor.documents d ON d.id = c.document_id
                 JOIN gcor.nodes n ON n.id = c.node_id
@@ -1565,7 +1568,7 @@ async def run_retrieval_query(
                 ORDER BY c.embedding <=> $1::vector
                 LIMIT ($6 * 4)
             ), lexical_candidates AS (
-                SELECT c.id, c.node_id, c.document_id, c.ordinal, c.content, c.embedding, d.title, d.source_uri, d.created_at, d.metadata, c.search_vector
+                SELECT c.id, c.node_id, c.document_id, c.ordinal, c.content, c.embedding, d.title, d.source_uri, d.created_at, d.metadata, d.content_sha256, c.search_vector
                 FROM gcor.chunks c
                 JOIN gcor.documents d ON d.id = c.document_id
                 JOIN gcor.nodes n ON n.id = c.node_id
@@ -1584,7 +1587,7 @@ async def run_retrieval_query(
                 ORDER BY ts_rank_cd(c.search_vector, search_terms.query, 32) DESC
                 LIMIT ($6 * 4)
             ), graph_candidates AS (
-                SELECT c.id,c.node_id,c.document_id,c.ordinal,c.content,c.embedding,d.title,d.source_uri,d.created_at,d.metadata,c.search_vector
+                SELECT c.id,c.node_id,c.document_id,c.ordinal,c.content,c.embedding,d.title,d.source_uri,d.created_at,d.metadata,d.content_sha256,c.search_vector
                 FROM gcor.chunks c JOIN gcor.documents d ON d.id=c.document_id JOIN gcor.nodes n ON n.id=c.node_id
                 WHERE d.id=ANY($15::uuid[]) AND d.access_level=$2 AND n.access_level=$2
                   AND d.metadata->>'channel_id'=$10 AND d.metadata->>'knowledge_state'='approved'
@@ -1601,7 +1604,7 @@ async def run_retrieval_query(
                 UNION
                 SELECT * FROM graph_candidates
             )
-                             SELECT c.id, c.node_id, c.document_id, c.ordinal, c.content, c.title, c.source_uri, c.created_at, c.metadata,
+                             SELECT c.id, c.node_id, c.document_id, c.ordinal, c.content, c.title, c.source_uri, c.created_at, c.metadata, c.content_sha256,
                    COALESCE(1 - (c.embedding <=> $1::vector), 0.0) AS vector_score,
                    ts_rank_cd(c.search_vector, search_terms.query, 32) AS lexical_score,
                                      ($8 * (COALESCE(1 - (c.embedding <=> $1::vector), 0.0)) +
@@ -1702,6 +1705,21 @@ def format_answer_from_chunks(query: str, matches: list[dict[str, Any]]) -> str:
             excerpt = excerpt[:257] + "..."
         lines.append(f"[{index + 1}] {excerpt}")
     return "\n".join(lines)
+
+
+def citation_from_match(item: dict[str, Any]) -> dict[str, Any]:
+    """Build integrity metadata exclusively from authorized stored records."""
+    metadata = normalize_json_dict(item.get("metadata"))
+    return {
+        "document_id": item["document_id"], "title": item["title"],
+        "source_uri": item.get("source_uri"), "ordinal": item["ordinal"],
+        "document_sha256": item.get("content_sha256"),
+        "chunk_sha256": hashlib.sha256(item["content"].encode("utf-8")).hexdigest(),
+        "channel_id": metadata.get("channel_id"),
+        "lifecycle_state": metadata.get("knowledge_state", "approved"),
+        "source_anchor": item["content"].split("\n", 1)[0] if item["content"].startswith("[") else None,
+        "score": item["score"],
+    }
 
 
 async def generate_grounded_answer(query: str, matches: list[dict[str, Any]]) -> str:
@@ -2115,16 +2133,7 @@ async def ask(
     )
     normalized = [dict(row) | {"id": str(row["id"]), "node_id": str(row["node_id"]), "document_id": str(row["document_id"])} for row in matches]
     evidence = normalized[:min(payload.max_citations, 6)]
-    citations = [
-        {
-            "document_id": item["document_id"],
-            "title": item["title"],
-            "source_uri": item.get("source_uri"),
-            "ordinal": item["ordinal"],
-            "score": item["score"],
-        }
-        for item in evidence
-    ]
+    citations = [citation_from_match(item) for item in evidence]
     REQUEST_DURATION.observe(time.perf_counter() - started)
     return {
         "answer": await generate_grounded_answer(query, evidence),
@@ -2167,16 +2176,7 @@ async def ask_reply(
     )
     normalized = [dict(row) | {"id": str(row["id"]), "node_id": str(row["node_id"]), "document_id": str(row["document_id"])} for row in matches]
     evidence = normalized[:min(payload.max_citations, 6)]
-    citations = [
-        {
-            "document_id": item["document_id"],
-            "title": item["title"],
-            "source_uri": item.get("source_uri"),
-            "ordinal": item["ordinal"],
-            "score": item["score"],
-        }
-        for item in evidence
-    ]
+    citations = [citation_from_match(item) for item in evidence]
     answer = await generate_grounded_answer(query, evidence)
     reply_text = compose_chat_reply(
         query,

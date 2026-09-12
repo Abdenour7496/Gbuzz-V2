@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 import re
+import socket
+import struct
 import sys
 from pathlib import Path
 
@@ -15,7 +17,7 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 ANCHOR = re.compile(r"^\[([^\]\r\n]+)\]\r?\n", re.MULTILINE)
 
 
-def process(request: dict) -> dict:
+def process(request: dict, content: bytes | None = None) -> dict:
     if request.get("contract_version") != CONTRACT_VERSION:
         raise ValueError("unsupported parser contract")
     digest = str(request.get("source_sha256", "")).casefold()
@@ -23,8 +25,7 @@ def process(request: dict) -> dict:
     media_type = str(request.get("declared_media_type", ""))
     if not HEX64.fullmatch(digest) or not isinstance(size, int) or size < 0 or size > MAX_INPUT:
         raise ValueError("invalid digest-bound source metadata")
-    source = Path("/input/source")
-    content = source.read_bytes()
+    content = Path("/input/source").read_bytes() if content is None else content
     if len(content) != size or hashlib.sha256(content).hexdigest() != digest:
         raise ValueError("staged source digest or size mismatch")
     text = extract(content, media_type)
@@ -49,6 +50,8 @@ def process(request: dict) -> dict:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--serve":
+        return serve()
     try:
         result = process(json.loads(sys.stdin.buffer.read(MAX_OUTPUT + 1)))
         payload = json.dumps(result, separators=(",", ":")).encode()
@@ -59,6 +62,38 @@ def main() -> int:
     except Exception as error:
         sys.stderr.write(json.dumps({"contract_version": CONTRACT_VERSION, "status": "failed", "error": str(error)[:500]}))
         return 2
+
+
+def _read(connection: socket.socket, length: int) -> bytes:
+    value = bytearray()
+    while len(value) < length:
+        chunk = connection.recv(length - len(value))
+        if not chunk:
+            raise ConnectionError("client closed early")
+        value.extend(chunk)
+    return bytes(value)
+
+
+def serve() -> int:
+    path = os.getenv("PARSER_SOCKET_PATH", "/run/parser/parser.sock")
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path);os.chmod(path,0o660);server.listen(8)
+    while True:
+        connection, _ = server.accept()
+        with connection:
+            try:
+                header_length, content_length = struct.unpack("!IQ", _read(connection, 12))
+                if header_length > 16_384 or content_length > MAX_INPUT:
+                    raise ValueError("request exceeds worker limits")
+                result = process(json.loads(_read(connection, header_length)), _read(connection, content_length))
+            except Exception as error:
+                result = {"contract_version": CONTRACT_VERSION, "status": "failed", "error": str(error)[:500]}
+            payload = json.dumps(result, separators=(",", ":")).encode()
+            connection.sendall(struct.pack("!I", len(payload)) + payload)
 
 
 if __name__ == "__main__":

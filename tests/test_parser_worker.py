@@ -12,7 +12,7 @@ class ParserWorkerTest(unittest.TestCase):
     def test_digest_bound_structured_output(self):
         body=b'Martin Bottos,78 hours\n';digest=hashlib.sha256(body).hexdigest()
         with patch.object(Path,'read_bytes',return_value=body):
-            result=WORKER.process({'contract_version':'gcor.parser.v1','source_sha256':digest,'source_size':len(body),'declared_media_type':'text/csv'})
+            result=WORKER.process({'contract_version':'gcor.parser.v1','source_sha256':digest,'source_size':len(body),'declared_media_type':'text/csv'},body)
         self.assertEqual('complete',result['status'])
         self.assertEqual(digest,result['source_sha256'])
         self.assertTrue(result['anchors'])

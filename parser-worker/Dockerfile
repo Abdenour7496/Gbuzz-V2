@@ -5,4 +5,4 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.lock && useradd 
 COPY proxy/document_parsing.py /app/document_parsing.py
 COPY parser-worker/worker.py /app/worker.py
 USER 10001:10001
-ENTRYPOINT ["python", "/app/worker.py"]
+ENTRYPOINT ["python", "/app/worker.py", "--serve"]
