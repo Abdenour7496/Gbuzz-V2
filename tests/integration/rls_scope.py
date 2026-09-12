@@ -41,7 +41,7 @@ async def run():
                                 docs[channel], node, '[' + ','.join(['0.1'] * dims) + ']')
         both = "SELECT count(*) FROM gcor.documents WHERE id = ANY($1::uuid[])"
         ids = list(docs.values())
-        assert await pool.fetchval(both, ids) == 2, 'unscoped runtime connection must see every row'
+        assert await pool.fetchval(both, ids) == 0, 'unscoped runtime connection must fail closed'
 
         token = current_principal.set(Principal('npub-probe', channel_a, 'public'))
         try:
@@ -62,13 +62,13 @@ async def run():
             current_principal.reset(token)
         # The single pooled connection was reused: scope must not survive release.
         assert await pool.fetchval("SELECT current_setting('gcor.channel_id', true)") in ('', None)
-        assert await pool.fetchval(both, ids) == 2
+        assert await pool.fetchval(both, ids) == 0
         assert await admin.fetchval("SELECT title FROM gcor.documents WHERE id=$1", docs[channel_b]) == 'rls probe'
     finally:
         await admin.execute("DELETE FROM gcor.documents WHERE id = ANY($1::uuid[])", list(docs.values()))
         await runtime.close()
         await admin.close()
-    print('PASS: runtime role is unprivileged, RLS scopes documents/chunks/nodes to the identity channel and access level, writes outside scope are refused, scope resets on release')
+    print('PASS: runtime role is unprivileged, unscoped access fails closed, RLS scopes documents/chunks/nodes to the identity channel and access level, writes outside scope are refused, scope resets on release')
 
 
 if __name__ == '__main__':

@@ -14,13 +14,13 @@ from __future__ import annotations
 
 from access_policy import current_principal
 
-SCOPE_SQL = "SELECT set_config('gcor.channel_id', $1, false), set_config('gcor.access_level', $2, false)"
+SCOPE_SQL = "SELECT set_config('gcor.channel_id', $1, false), set_config('gcor.access_level', $2, false), set_config('gcor.workload', $3, false)"
 
 
 async def apply_scope(connection) -> None:
     principal = current_principal.get()
     if principal is not None:
-        await connection.execute(SCOPE_SQL, principal.channel_id or '', principal.access_level or '')
+        await connection.execute(SCOPE_SQL, principal.channel_id or '', principal.access_level or '', principal.subject if principal.workload else '')
 
 
 class _ScopedAcquire:

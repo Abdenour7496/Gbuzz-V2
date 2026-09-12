@@ -31,7 +31,7 @@ from request_limits import RequestLimits
 from egress import ValidatedTransport, is_public_address
 from governance_outbox import run_publisher
 from governance_service import commit_governance, request_hash
-from access_policy import ScopedAccess, current_principal
+from access_policy import Principal, ScopedAccess, current_principal
 from db_scope import ScopedPool
 from enterprise_workflows import router as workspace_router, worker as ingestion_worker
 from document_parsing import extract as parse_document
@@ -1076,9 +1076,17 @@ async def lifespan(app: FastAPI):
     await ensure_all_bucket_versioning(app.state.s3)
     app.state.governance_available = bool(await app.state.pool.fetchval("SELECT to_regclass('gcor.governance_outbox')"))
     app.state.governance_s3 = minio_client(Config(connect_timeout=2, read_timeout=5, retries={"total_max_attempts": 1}))
-    publisher = asyncio.create_task(run_publisher(app.state.pool, app.state.governance_s3)) if app.state.governance_available else None
+    publisher = None
+    if app.state.governance_available:
+        token=current_principal.set(Principal('governance-publisher','','',role='service',workload=True,operations=frozenset({'publish'})))
+        try: publisher=asyncio.create_task(run_publisher(app.state.pool, app.state.governance_s3))
+        finally: current_principal.reset(token)
     app.state.workflows_available = bool(await app.state.pool.fetchval("SELECT to_regclass('gcor.ingestion_jobs')"))
-    job_worker = asyncio.create_task(ingestion_worker(app)) if app.state.workflows_available and os.getenv('GCOR_ACCESS_MODE','legacy')=='legacy' and os.getenv('GCOR_INGESTION_WORKER','true')=='true' else None
+    job_worker = None
+    if app.state.workflows_available and os.getenv('GCOR_ACCESS_MODE','legacy')=='legacy' and os.getenv('GCOR_INGESTION_WORKER','true')=='true':
+        token=current_principal.set(Principal('ingestion-worker','','',role='service',workload=True,operations=frozenset({'ingest'})))
+        try: job_worker=asyncio.create_task(ingestion_worker(app))
+        finally: current_principal.reset(token)
     yield
     if job_worker is not None:
         job_worker.cancel()
