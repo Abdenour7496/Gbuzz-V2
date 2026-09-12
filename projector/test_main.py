@@ -134,8 +134,11 @@ class AttachmentFetchTest(unittest.IsolatedAsyncioTestCase):
                 return "UPDATE 3"
         pool = Pool()
         self.assertEqual(3, await main.invalidate_stale_evidence(pool))
-        self.assertIn("valid_to=now()", pool.statement)
+        self.assertIn("DELETE FROM gcor.edges", pool.statement)
+        self.assertIn("DELETE FROM gcor.chunks", pool.statement)
+        self.assertIn("DELETE FROM gcor.nodes", pool.statement)
         self.assertIn("superseded", pool.statement)
+        self.assertIn("extraction_version", pool.statement)
 
 
 if __name__ == "__main__":

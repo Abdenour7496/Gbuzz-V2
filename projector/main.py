@@ -269,16 +269,32 @@ async def process_event(pool: asyncpg.Pool, client: httpx.AsyncClient, row: asyn
 
 
 async def invalidate_stale_evidence(pool: asyncpg.Pool) -> int:
-    """Expire derived nodes when their event/channel or governed document is no longer current."""
+    """Atomically remove rebuildable derivatives while retaining immutable evidence."""
     result = await pool.execute(
-        """UPDATE gcor.nodes n SET valid_to=now()
-           FROM gcor.documents d
-           LEFT JOIN public.events e ON encode(e.id,'hex')=d.metadata->>'parent_event_id'
-           LEFT JOIN public.channels c ON c.id::text=d.metadata->>'channel_id'
-           WHERE n.document_id=d.id AND n.valid_to IS NULL
-             AND d.metadata->>'record_type'='buzz_attachment'
-             AND (e.deleted_at IS NOT NULL OR c.deleted_at IS NOT NULL OR c.archived_at IS NOT NULL
-                  OR d.metadata->>'knowledge_state' IN ('archived','rejected','superseded'))""")
+        """WITH stale_docs AS MATERIALIZED (
+               SELECT d.id FROM gcor.documents d
+               LEFT JOIN public.events e ON encode(e.id,'hex')=d.metadata->>'parent_event_id'
+               LEFT JOIN public.channels c ON c.id::text=d.metadata->>'channel_id'
+               WHERE d.metadata->>'record_type'='buzz_attachment'
+                 AND (e.deleted_at IS NOT NULL OR c.deleted_at IS NOT NULL OR c.archived_at IS NOT NULL
+                      OR d.metadata->>'knowledge_state' IN ('archived','rejected','superseded')
+                      OR EXISTS (SELECT 1 FROM gcor.documents newer
+                           WHERE newer.source_uri=d.source_uri AND newer.id<>d.id
+                             AND newer.metadata->>'extraction_version' IS DISTINCT FROM d.metadata->>'extraction_version'
+                             AND newer.updated_at>d.updated_at))
+           ), stale_nodes AS MATERIALIZED (
+               SELECT id FROM gcor.nodes WHERE document_id IN (SELECT id FROM stale_docs)
+           ), removed_edges AS (
+               DELETE FROM gcor.edges WHERE source_id IN (SELECT id FROM stale_nodes)
+                  OR target_id IN (SELECT id FROM stale_nodes) RETURNING id
+           ), removed_chunks AS (
+               DELETE FROM gcor.chunks WHERE document_id IN (SELECT id FROM stale_docs) RETURNING id
+           ), removed_nodes AS (
+               DELETE FROM gcor.nodes WHERE id IN (SELECT id FROM stale_nodes) RETURNING id
+           )
+           UPDATE gcor.documents SET metadata=metadata || jsonb_build_object(
+               'derivatives_invalidated',true,'derivatives_invalidated_at',now())
+           WHERE id IN (SELECT id FROM stale_docs)""")
     return int(result.rsplit(" ", 1)[-1])
 
 
