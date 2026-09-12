@@ -1722,6 +1722,31 @@ def citation_from_match(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def verify_release_authorization(request: Request, citations: list[dict[str, Any]]) -> None:
+    principal = current_principal.get()
+    if principal is None or not re.fullmatch(r"[0-9a-f]{64}", principal.subject or ""):
+        return
+    active = await request.app.state.pool.fetchval(
+        """SELECT EXISTS(SELECT 1 FROM public.channels c
+             JOIN public.channel_members m ON m.channel_id=c.id AND m.community_id=c.community_id
+             JOIN public.users u ON u.community_id=c.community_id AND u.pubkey=m.pubkey
+             WHERE c.id=$1::uuid AND m.pubkey=$2 AND m.removed_at IS NULL
+               AND u.deactivated_at IS NULL AND c.deleted_at IS NULL AND c.archived_at IS NULL)""",
+        principal.channel_id, bytes.fromhex(principal.subject), timeout=5)
+    if not active:
+        raise HTTPException(403, "Active Buzz channel membership required at response release")
+    if citations:
+        ids = list({UUID(item["document_id"]) for item in citations})
+        count = await request.app.state.pool.fetchval(
+            """SELECT count(*) FROM gcor.documents d WHERE d.id=ANY($1::uuid[])
+               AND d.metadata->>'channel_id'=$2 AND d.access_level=$3
+               AND d.metadata->>'knowledge_state'='approved'
+               AND gcor.knowledge_evidence_current(d.id)""",
+            ids, principal.channel_id, principal.access_level, timeout=5)
+        if count != len(ids):
+            raise HTTPException(409, "Citation evidence changed before response release")
+
+
 async def generate_grounded_answer(query: str, matches: list[dict[str, Any]]) -> str:
     """Synthesize a local, cited answer and fall back safely to ranked excerpts."""
     fallback = format_answer_from_chunks(query, matches)
@@ -2134,9 +2159,11 @@ async def ask(
     normalized = [dict(row) | {"id": str(row["id"]), "node_id": str(row["node_id"]), "document_id": str(row["document_id"])} for row in matches]
     evidence = normalized[:min(payload.max_citations, 6)]
     citations = [citation_from_match(item) for item in evidence]
+    answer = await generate_grounded_answer(query, evidence)
+    await verify_release_authorization(request, citations)
     REQUEST_DURATION.observe(time.perf_counter() - started)
     return {
-        "answer": await generate_grounded_answer(query, evidence),
+        "answer": answer,
         "citations": citations,
         "chunks": normalized,
         "graph_nodes": [dict(row) | {"id": str(row["id"])} for row in graph_nodes],
@@ -2178,6 +2205,7 @@ async def ask_reply(
     evidence = normalized[:min(payload.max_citations, 6)]
     citations = [citation_from_match(item) for item in evidence]
     answer = await generate_grounded_answer(query, evidence)
+    await verify_release_authorization(request, citations)
     reply_text = compose_chat_reply(
         query,
         citations,
