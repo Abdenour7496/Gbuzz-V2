@@ -1,0 +1,62 @@
+{
+  "schema_version": "1.0.0",
+  "policy_id": "owner-policy-required",
+  "policy_version": 1,
+  "name": "Owner policy selection required",
+  "status": "draft",
+  "classification": {
+    "level": "restricted",
+    "inherit_from_source": true,
+    "downgrade_requires_human_approval": true,
+    "unclassified_action": "quarantine",
+    "sensitive_data_markers": [],
+    "residency_constraints": [],
+    "export_constraints": []
+  },
+  "record_category": {"category_id": "unassigned-record-category", "trigger": "owner_selected", "trigger_field": null},
+  "ownership": {
+    "record_owner_role": "OWNER_SELECTION_REQUIRED",
+    "knowledge_owner_role": "OWNER_SELECTION_REQUIRED",
+    "records_admin_role": "OWNER_SELECTION_REQUIRED",
+    "hold_custodian_role": "OWNER_SELECTION_REQUIRED",
+    "export_approver_role": "OWNER_SELECTION_REQUIRED"
+  },
+  "review": {
+    "interval": "OWNER_SELECTION_REQUIRED",
+    "approval_sla": "OWNER_SELECTION_REQUIRED",
+    "overdue_action": "exclude_authoritative_use",
+    "human_approval_required": true,
+    "minimum_reviewer_role": "owner"
+  },
+  "retention": {
+    "period": "OWNER_SELECTION_REQUIRED",
+    "automatic_deletion_allowed": false,
+    "policy_change_can_shorten_without_approval": false,
+    "backup_treatment": "owner_selected"
+  },
+  "legal_hold": {"overrides_disposition": true, "release_requires_human_approval": true, "dynamic_scope_supported": false},
+  "disposition": {
+    "mode": "manual_review",
+    "requires_eligibility_evaluation": true,
+    "requires_human_authorization": true,
+    "requires_reconciliation": true,
+    "requires_certificate": true,
+    "propagation_sla": "OWNER_SELECTION_REQUIRED"
+  },
+  "audit_pack": {
+    "retention_period": "OWNER_SELECTION_REQUIRED",
+    "approval_mode": "dual_human",
+    "recipient_required": true,
+    "purpose_required": true,
+    "expiry_required": true,
+    "access_logging_required": true
+  },
+  "integrity_controls": {
+    "immutable_evidence": true,
+    "derived_is_rebuildable": true,
+    "strictest_source_policy_wins": true,
+    "agents_cannot_approve": true,
+    "holds_block_all_disposition": true,
+    "chain_of_custody_required": true
+  }
+}

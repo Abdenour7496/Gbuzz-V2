@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "release_rule": "all_required_cases_must_pass; unsupported_required_capabilities_fail_closed",
+  "cases": [
+    {"id": "GOV-001", "family": "classification", "required": true, "human_evidence_required": true, "assertions": ["source_inheritance", "stricter_override", "policy_version_preserved", "unclassified_quarantined"]},
+    {"id": "GOV-002", "family": "authority", "required": true, "human_evidence_required": true, "assertions": ["agent_cannot_approve", "human_delegation_current", "all_mutation_paths_covered"]},
+    {"id": "GOV-003", "family": "review_concurrency", "required": true, "human_evidence_required": true, "assertions": ["content_change_conflicts", "evidence_change_conflicts", "policy_change_conflicts", "reader_change_conflicts"]},
+    {"id": "GOV-004", "family": "knowledge_change", "required": true, "human_evidence_required": true, "assertions": ["correction_requires_adjudication", "cross_channel_link_denied", "cycles_denied", "authoritative_retrieval_updated"]},
+    {"id": "GOV-005", "family": "legal_hold", "required": true, "human_evidence_required": true, "assertions": ["preexisting_record_held", "new_match_held", "all_delete_paths_blocked", "release_authorized"]},
+    {"id": "GOV-006", "family": "retention", "required": true, "human_evidence_required": true, "assertions": ["time_boundaries", "timezone", "leap_year", "policy_migration_authorized"]},
+    {"id": "GOV-007", "family": "deletion_propagation", "required": true, "human_evidence_required": true, "assertions": ["all_stores_terminal", "retry_idempotent", "no_resurrection", "zero_unresolved_descendants"]},
+    {"id": "GOV-008", "family": "tenant_offboarding", "required": true, "human_evidence_required": true, "assertions": ["access_revoked", "mixed_hold_handled", "cross_tenant_unchanged", "certificate_reconciles"]},
+    {"id": "GOV-009", "family": "audit_pack", "required": true, "human_evidence_required": true, "assertions": ["request_approved", "recipient_bound", "expiry_enforced", "service_misuse_denied", "scope_minimized"]},
+    {"id": "GOV-010", "family": "restore", "required": true, "human_evidence_required": false, "assertions": ["holds_replayed_before_reads", "tombstones_replayed_before_reads", "deleted_not_rebuilt"]},
+    {"id": "GOV-011", "family": "chain_of_custody", "required": true, "human_evidence_required": true, "assertions": ["payload_tamper_denied", "manifest_tamper_denied", "key_history_verified", "missing_event_denied"]},
+    {"id": "GOV-012", "family": "metrics_reconciliation", "required": true, "human_evidence_required": false, "assertions": ["classification_coverage", "approval_completeness", "disposition_exceptions", "propagation_sla"]}
+  ]
+}

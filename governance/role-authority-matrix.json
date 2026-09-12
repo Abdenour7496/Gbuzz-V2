@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0.0",
+  "default": "deny",
+  "roles": ["record_owner", "knowledge_owner", "reviewer", "records_admin", "contributor", "agent", "auditor_export_custodian"],
+  "actions": {
+    "submit_evidence": ["record_owner", "knowledge_owner", "reviewer", "records_admin", "contributor", "agent"],
+    "create_proposal": ["record_owner", "knowledge_owner", "reviewer", "records_admin", "contributor", "agent"],
+    "suggest_classification": ["record_owner", "knowledge_owner", "reviewer", "records_admin", "contributor", "agent"],
+    "approve_knowledge": ["record_owner", "knowledge_owner", "reviewer"],
+    "downgrade_classification": ["record_owner", "records_admin"],
+    "create_legal_hold": ["record_owner", "records_admin"],
+    "release_legal_hold": ["record_owner", "records_admin"],
+    "approve_disposition": ["record_owner", "records_admin"],
+    "execute_disposition": ["records_admin"],
+    "request_audit_export": ["record_owner", "knowledge_owner", "reviewer", "records_admin", "auditor_export_custodian"],
+    "approve_audit_export": ["record_owner", "records_admin", "auditor_export_custodian"],
+    "release_audit_export": ["records_admin", "auditor_export_custodian"],
+    "approve_tenant_offboarding": ["record_owner", "records_admin"],
+    "execute_tenant_offboarding": ["records_admin"]
+  },
+  "constraints": {
+    "human_only": ["approve_knowledge", "downgrade_classification", "create_legal_hold", "release_legal_hold", "approve_disposition", "approve_audit_export", "release_audit_export", "approve_tenant_offboarding"],
+    "separation_of_duties": {
+      "release_legal_hold": ["create_legal_hold"],
+      "execute_disposition": ["approve_disposition"],
+      "approve_audit_export": ["request_audit_export"],
+      "release_audit_export": ["approve_audit_export"]
+    },
+    "active_delegation_required": ["approve_knowledge", "approve_disposition", "approve_audit_export", "release_audit_export"],
+    "exact_revision_required": ["approve_knowledge"],
+    "reason_required": ["downgrade_classification", "release_legal_hold", "approve_disposition", "approve_audit_export", "approve_tenant_offboarding"]
+  }
+}

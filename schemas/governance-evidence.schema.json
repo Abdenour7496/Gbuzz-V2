@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gbuzz.local/schemas/governance-evidence.schema.json",
+  "title": "Gbuzz Governance Certification Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "governance_schema_version", "code_commit", "policy_id", "policy_version", "environment_profile_sha256", "run_started_at", "run_completed_at", "valid_until", "evidence"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "governance_schema_version": {"const": "1.0.0"},
+    "code_commit": {"$ref": "#/$defs/gitOid"},
+    "policy_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"},
+    "policy_version": {"type": "integer", "minimum": 1},
+    "environment_profile_sha256": {"$ref": "#/$defs/sha256"},
+    "run_started_at": {"type": "string", "format": "date-time"},
+    "run_completed_at": {"type": "string", "format": "date-time"},
+    "valid_until": {"type": "string", "format": "date-time"},
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["test_id", "result", "artifact_path", "artifact_sha256", "code_commit", "policy_id", "policy_version", "governance_schema_version", "environment_profile_sha256", "run_at"],
+        "properties": {
+          "test_id": {"type": "string", "pattern": "^GOV-[0-9]{3}/[a-z0-9_]+$"},
+          "result": {"const": "pass"},
+          "artifact_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]{1,500}$"},
+          "artifact_sha256": {"$ref": "#/$defs/sha256"},
+          "code_commit": {"$ref": "#/$defs/gitOid"},
+          "policy_id": {"type": "string"},
+          "policy_version": {"type": "integer", "minimum": 1},
+          "governance_schema_version": {"const": "1.0.0"},
+          "environment_profile_sha256": {"$ref": "#/$defs/sha256"},
+          "run_at": {"type": "string", "format": "date-time"},
+          "approval": {
+            "type": "object", "additionalProperties": false,
+            "required": ["reviewer_pubkey", "decision_sha256", "approved_at"],
+            "properties": {
+              "reviewer_pubkey": {"$ref": "#/$defs/sha256"},
+              "decision_sha256": {"$ref": "#/$defs/sha256"},
+              "approved_at": {"type": "string", "format": "date-time"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gitOid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"}
+  }
+}

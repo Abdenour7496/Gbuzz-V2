@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0.0",
+  "initial_state": "captured",
+  "terminal_states": ["disposed", "offboarded_with_certificate"],
+  "states": ["captured", "quarantined", "proposed", "approved", "review_overdue", "correction_pending", "superseded", "expired", "archived", "disposition_eligible", "disposition_approved", "disposition_blocked", "disposed", "offboarding_frozen", "offboarded_with_certificate"],
+  "transitions": [
+    {"from": "captured", "to": "quarantined", "action": "classification_or_integrity_failure", "actor": "system"},
+    {"from": "captured", "to": "proposed", "action": "propose", "actor": "human_or_agent"},
+    {"from": "quarantined", "to": "captured", "action": "remediate_and_reverify", "actor": "records_admin"},
+    {"from": "proposed", "to": "approved", "action": "approve_exact_revision", "actor": "human_reviewer"},
+    {"from": "approved", "to": "review_overdue", "action": "review_due_elapsed", "actor": "system"},
+    {"from": "approved", "to": "correction_pending", "action": "record_correction_or_contradiction", "actor": "human_or_agent"},
+    {"from": "correction_pending", "to": "approved", "action": "adjudicate_and_approve_revision", "actor": "human_reviewer"},
+    {"from": "approved", "to": "superseded", "action": "approve_replacement", "actor": "human_reviewer"},
+    {"from": "approved", "to": "expired", "action": "effective_expiry", "actor": "system"},
+    {"from": "proposed", "to": "archived", "action": "retire", "actor": "human_reviewer"},
+    {"from": "approved", "to": "archived", "action": "retire", "actor": "human_reviewer"},
+    {"from": "superseded", "to": "disposition_eligible", "action": "retention_elapsed", "actor": "system"},
+    {"from": "expired", "to": "disposition_eligible", "action": "retention_elapsed", "actor": "system"},
+    {"from": "archived", "to": "disposition_eligible", "action": "retention_elapsed", "actor": "system"},
+    {"from": "disposition_eligible", "to": "disposition_blocked", "action": "legal_hold_or_dependency", "actor": "system"},
+    {"from": "disposition_eligible", "to": "disposition_approved", "action": "authorize_disposition", "actor": "human_records_authority"},
+    {"from": "disposition_blocked", "to": "disposition_eligible", "action": "authorized_block_release", "actor": "human_records_authority"},
+    {"from": "disposition_approved", "to": "disposed", "action": "reconcile_and_certify", "actor": "records_admin"},
+    {"from": "captured", "to": "offboarding_frozen", "action": "start_tenant_offboarding", "actor": "human_records_authority"},
+    {"from": "proposed", "to": "offboarding_frozen", "action": "start_tenant_offboarding", "actor": "human_records_authority"},
+    {"from": "approved", "to": "offboarding_frozen", "action": "start_tenant_offboarding", "actor": "human_records_authority"},
+    {"from": "offboarding_frozen", "to": "offboarded_with_certificate", "action": "reconcile_transfer_hold_retention_disposition", "actor": "records_admin"}
+  ],
+  "invariants": [
+    "archived_is_not_deleted",
+    "evidence_payload_is_immutable",
+    "derived_records_never_become_authority",
+    "agent_cannot_execute_human_only_transition",
+    "legal_hold_blocks_every_disposition_route",
+    "state_change_is_append_only_and_attributed",
+    "classification_or_evidence_change_invalidates_approval",
+    "strictest_source_policy_wins",
+    "disposed_requires_reconciled_certificate"
+  ]
+}

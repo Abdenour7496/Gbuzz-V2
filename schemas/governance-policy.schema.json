@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gbuzz.local/schemas/governance-policy.schema.json",
+  "title": "Gbuzz Governance Policy",
+  "description": "Jurisdiction-neutral classification, retention, review, hold and disposition policy. Durations and authorities are owner-configured; omission never authorizes deletion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "policy_id", "policy_version", "name", "status",
+    "classification", "record_category", "ownership", "review",
+    "retention", "legal_hold", "disposition", "audit_pack", "integrity_controls"
+  ],
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "active"}}, "required": ["status"]},
+      "then": {
+        "required": ["effective_at"],
+        "properties": {
+          "ownership": {
+            "properties": {
+              "record_owner_role": {"not": {"const": "OWNER_SELECTION_REQUIRED"}},
+              "knowledge_owner_role": {"not": {"const": "OWNER_SELECTION_REQUIRED"}},
+              "records_admin_role": {"not": {"const": "OWNER_SELECTION_REQUIRED"}},
+              "hold_custodian_role": {"not": {"const": "OWNER_SELECTION_REQUIRED"}},
+              "export_approver_role": {"not": {"const": "OWNER_SELECTION_REQUIRED"}}
+            }
+          },
+          "review": {
+            "properties": {
+              "interval": {"$ref": "#/$defs/resolvedDuration"},
+              "approval_sla": {"$ref": "#/$defs/resolvedDuration"}
+            }
+          },
+          "retention": {"properties": {"period": {"$ref": "#/$defs/resolvedDuration"}}},
+          "disposition": {"properties": {"propagation_sla": {"$ref": "#/$defs/resolvedDuration"}}},
+          "audit_pack": {"properties": {"retention_period": {"$ref": "#/$defs/resolvedDuration"}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"policy_version": {"minimum": 2}}, "required": ["policy_version"]},
+      "then": {"required": ["supersedes"], "properties": {"supersedes": {"type": "string"}}}
+    }
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "policy_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"},
+    "policy_version": {"type": "integer", "minimum": 1},
+    "name": {"type": "string", "minLength": 3, "maxLength": 200},
+    "status": {"enum": ["draft", "active", "retired"]},
+    "effective_at": {"type": "string", "format": "date-time"},
+    "supersedes": {"type": ["string", "null"], "pattern": "^[a-z0-9][a-z0-9._-]{2,127}@[1-9][0-9]*$"},
+    "classification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["level", "inherit_from_source", "downgrade_requires_human_approval", "unclassified_action"],
+      "properties": {
+        "level": {"enum": ["public", "internal", "confidential", "restricted"], "default": "restricted"},
+        "inherit_from_source": {"const": true},
+        "downgrade_requires_human_approval": {"const": true},
+        "unclassified_action": {"const": "quarantine"},
+        "sensitive_data_markers": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true, "default": []},
+        "residency_constraints": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true, "default": []},
+        "export_constraints": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true, "default": []}
+      }
+    },
+    "record_category": {
+      "type": "object", "additionalProperties": false,
+      "required": ["category_id", "trigger"],
+      "properties": {
+        "category_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"},
+        "trigger": {"enum": ["created_at", "event_at", "approval_at", "superseded_at", "contract_end", "employment_end", "case_closed", "owner_selected"]},
+        "trigger_field": {"type": ["string", "null"], "maxLength": 128}
+      }
+    },
+    "ownership": {
+      "type": "object", "additionalProperties": false,
+      "required": ["record_owner_role", "knowledge_owner_role", "records_admin_role"],
+      "properties": {
+        "record_owner_role": {"type": "string", "minLength": 1},
+        "knowledge_owner_role": {"type": "string", "minLength": 1},
+        "records_admin_role": {"type": "string", "minLength": 1},
+        "hold_custodian_role": {"type": "string", "minLength": 1},
+        "export_approver_role": {"type": "string", "minLength": 1}
+      }
+    },
+    "review": {
+      "type": "object", "additionalProperties": false,
+      "required": ["interval", "approval_sla", "overdue_action", "human_approval_required"],
+      "properties": {
+        "interval": {"$ref": "#/$defs/ownerDuration"},
+        "approval_sla": {"$ref": "#/$defs/ownerDuration"},
+        "overdue_action": {"enum": ["warn", "exclude_authoritative_use", "require_reapproval"], "default": "exclude_authoritative_use"},
+        "human_approval_required": {"const": true},
+        "minimum_reviewer_role": {"enum": ["owner", "admin"]}
+      }
+    },
+    "retention": {
+      "type": "object", "additionalProperties": false,
+      "required": ["period", "automatic_deletion_allowed", "policy_change_can_shorten_without_approval"],
+      "properties": {
+        "period": {"$ref": "#/$defs/ownerDuration"},
+        "automatic_deletion_allowed": {"const": false},
+        "policy_change_can_shorten_without_approval": {"const": false},
+        "backup_treatment": {"enum": ["expire_with_schedule", "tombstone_on_restore", "owner_selected"]}
+      }
+    },
+    "legal_hold": {
+      "type": "object", "additionalProperties": false,
+      "required": ["overrides_disposition", "release_requires_human_approval", "dynamic_scope_supported"],
+      "properties": {
+        "overrides_disposition": {"const": true},
+        "release_requires_human_approval": {"const": true},
+        "dynamic_scope_supported": {"type": "boolean"}
+      }
+    },
+    "disposition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "requires_eligibility_evaluation", "requires_human_authorization", "requires_reconciliation", "requires_certificate"],
+      "properties": {
+        "mode": {"const": "manual_review"},
+        "requires_eligibility_evaluation": {"const": true},
+        "requires_human_authorization": {"const": true},
+        "requires_reconciliation": {"const": true},
+        "requires_certificate": {"const": true},
+        "propagation_sla": {"$ref": "#/$defs/ownerDuration"}
+      }
+    },
+    "audit_pack": {
+      "type": "object", "additionalProperties": false,
+      "required": ["retention_period", "approval_mode", "recipient_required", "purpose_required", "expiry_required", "access_logging_required"],
+      "properties": {
+        "retention_period": {"$ref": "#/$defs/ownerDuration"},
+        "approval_mode": {"enum": ["single_human", "dual_human"], "default": "dual_human"},
+        "recipient_required": {"const": true},
+        "purpose_required": {"const": true},
+        "expiry_required": {"const": true},
+        "access_logging_required": {"const": true}
+      }
+    },
+    "integrity_controls": {
+      "type": "object", "additionalProperties": false,
+      "required": ["immutable_evidence", "derived_is_rebuildable", "strictest_source_policy_wins", "agents_cannot_approve", "holds_block_all_disposition", "chain_of_custody_required"],
+      "properties": {
+        "immutable_evidence": {"const": true},
+        "derived_is_rebuildable": {"const": true},
+        "strictest_source_policy_wins": {"const": true},
+        "agents_cannot_approve": {"const": true},
+        "holds_block_all_disposition": {"const": true},
+        "chain_of_custody_required": {"const": true}
+      }
+    }
+  },
+  "$defs": {
+    "resolvedDuration": {
+      "type": "string",
+      "pattern": "^P(?!$)(?:[0-9]+Y)?(?:[0-9]+M)?(?:[0-9]+D)?(?:T(?:[0-9]+H)?(?:[0-9]+M)?(?:[0-9]+S)?)?$"
+    },
+    "ownerDuration": {
+      "description": "A required owner choice. No default legal period is inferred.",
+      "oneOf": [
+        {"$ref": "#/$defs/resolvedDuration"},
+        {"const": "OWNER_SELECTION_REQUIRED"}
+      ]
+    }
+  }
+}
