@@ -23,6 +23,9 @@ COPY scripts/check-buzz-knowledge.py ./scripts/check-buzz-knowledge.py
 COPY proxy/workspace ./workspace
 COPY clients/buzz-knowledge.mjs ./workspace/buzz-knowledge.mjs
 COPY scripts/evaluate-knowledge.py ./scripts/evaluate-knowledge.py
+COPY scripts/review-enterprise-evaluation.py ./scripts/review-enterprise-evaluation.py
+COPY scripts/evaluate-service-identity-matrix.py ./scripts/evaluate-service-identity-matrix.py
+COPY config/enterprise-assurance-slos.v1.json ./config/enterprise-assurance-slos.v1.json
 COPY schemas ./schemas
 COPY tests ./tests
 
