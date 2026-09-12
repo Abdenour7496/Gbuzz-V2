@@ -106,7 +106,7 @@ class ScopedAccess:
                         return {"type": "http.request", "body": raw_body, "more_body": False}
                     receive = replay
                 except PermissionError:
-                    return await JSONResponse({"detail": "Active Buzz channel membership required"}, status_code=403)(scope, receive, send)
+                    return await JSONResponse({"detail": "Authorization proof rejected or membership inactive"}, status_code=403)(scope, receive, send)
                 except Exception:
                     principal = None
             if principal is None:
@@ -118,6 +118,20 @@ class ScopedAccess:
             return await JSONResponse({"detail": "Read-only credential cannot access this endpoint"}, status_code=403)(scope, receive, send)
         reset = current_principal.set(principal)
         try:
-            await self.app(scope, receive, send)
+            if principal is not None and self.mode == 'buzz':
+                released = blocked = False
+                async def release_checked(message):
+                    nonlocal released, blocked
+                    if blocked:
+                        return
+                    if message['type'] == 'http.response.start' and not released:
+                        released = True
+                        if not await self.nostr.still_authorized(principal):
+                            blocked = True
+                            return await JSONResponse({"detail": "Membership revoked before response release"}, status_code=403)(scope, receive, send)
+                    await send(message)
+                await self.app(scope, receive, release_checked)
+            else:
+                await self.app(scope, receive, send)
         finally:
             current_principal.reset(reset)

@@ -107,6 +107,27 @@ class NostrTest(unittest.IsolatedAsyncioTestCase):
             await auth.authenticate(token,scope,body)
         self.assertEqual(pool.fetchrow.await_count,2)
 
+    async def test_nip98_proof_is_single_use(self):
+        pool=SimpleNamespace(fetchrow=AsyncMock(return_value={'visibility':'private'}))
+        auth=BuzzIdentity(SimpleNamespace(state=SimpleNamespace(pool=pool)),'http://test')
+        body=b'{"channel_id":"11111111-1111-1111-1111-111111111111"}'
+        token=signed_event(PrivateKey(),body)
+        scope={'path':'/api/ask','method':'POST'}
+        await auth.authenticate(token,scope,body)
+        with self.assertRaisesRegex(PermissionError,'already used'):
+            await auth.authenticate(token,scope,body)
+
+    async def test_response_release_rechecks_membership(self):
+        async def endpoint(scope,receive,send):
+            await send({'type':'http.response.start','status':200,'headers':[]})
+            await send({'type':'http.response.body','body':b'{}'})
+        principal=Principal('a'*64,'11111111-1111-1111-1111-111111111111','private')
+        nostr=SimpleNamespace(authenticate=AsyncMock(return_value=principal),still_authorized=AsyncMock(return_value=False))
+        app=ScopedAccess(endpoint,mode='buzz',nostr=nostr)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
+            response=await client.post('/api/ask',content=b'{}',headers={'Authorization':'Nostr token'})
+        self.assertEqual(response.status_code,403)
+
 
 class EvidenceTest(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_or_missing_citations_use_excerpts(self):

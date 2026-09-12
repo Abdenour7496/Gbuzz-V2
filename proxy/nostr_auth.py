@@ -3,6 +3,8 @@ import base64
 import hashlib
 import json
 import time
+import asyncio
+from collections import OrderedDict
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -47,12 +49,43 @@ class BuzzIdentity:
             raise ValueError("GCOR_PUBLIC_ORIGIN must be an absolute HTTP(S) origin")
         self.app=app
         self.origin=origin.rstrip('/')
+        self._replays: OrderedDict[str, float] = OrderedDict()
+        self._replay_lock = asyncio.Lock()
+        self._replay_limit = 10_000
+
+    async def _claim(self, event_id: str, now: float | None = None) -> None:
+        current = time.time() if now is None else now
+        async with self._replay_lock:
+            while self._replays:
+                _, seen = next(iter(self._replays.items()))
+                if current - seen <= 60 and len(self._replays) < self._replay_limit:
+                    break
+                self._replays.popitem(last=False)
+            if event_id in self._replays:
+                raise PermissionError("NIP-98 proof already used")
+            if len(self._replays) >= self._replay_limit:
+                raise PermissionError("NIP-98 replay cache is full")
+            self._replays[event_id] = current
+
+    async def still_authorized(self, principal: Principal) -> bool:
+        if not principal.channel_id:
+            return True
+        row = await self.app.state.pool.fetchval('''
+            SELECT 1 FROM public.channels c
+            JOIN public.channel_members m ON m.channel_id=c.id AND m.community_id=c.community_id
+            JOIN public.users u ON u.community_id=c.community_id AND u.pubkey=m.pubkey
+            WHERE c.id=$1 AND m.pubkey=$2 AND m.removed_at IS NULL
+              AND u.deactivated_at IS NULL AND c.deleted_at IS NULL AND c.archived_at IS NULL
+        ''', UUID(principal.channel_id), bytes.fromhex(principal.subject), timeout=5)
+        return bool(row)
 
     async def authenticate(self, token: bytes, scope, body: bytes) -> Principal:
         path=scope.get('raw_path',scope['path'].encode()).decode('ascii')
         query=scope.get('query_string',b'').decode('ascii')
         url=self.origin+path+('?' + query if query else '')
         pubkey=verify_event(token,url,scope['method'],body)
+        event_id=json.loads(base64.b64decode(token, validate=True))['id']
+        await self._claim(event_id)
         payload=json.loads(body)
         if scope['path']=='/api/workspace/channels':
             return Principal(pubkey,'','public')
