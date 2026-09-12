@@ -71,5 +71,14 @@ port: relay must have exactly the approved LAN binding and every other published
 service must remain on loopback. Windows firewall audit additionally inventories
 active policy stores, protocol Any, port lists/ranges, address ranges/subnets,
 IPv6, NAT and portproxy. Docker/WSL forwarding and routed-client reachability remain
-separate required evidence. Their absence makes the exposure gate
-`compliant:false`; Windows firewall state alone is never exposure proof.
+separate required evidence. Activation accepts only schema-versioned
+`activation_probe` records signed by two different RSA-3072 identities pinned in
+the protected exposure-evidence policy. One external source must be inside the
+approved CIDR and prove a successful TCP connection; the other must be outside
+the CIDR and prove denial. Both records bind the distinct probe identity/host,
+relay address/port/CIDR, deployment and release IDs, resolved Compose and firewall
+policy digests, shared run ID/nonce, tool/version, and a fresh UTC interval.
+`modeled_test`, unsigned, stale, duplicated, contradictory, same-host, wrong-key,
+or mismatched evidence cannot satisfy activation. Missing or invalid evidence
+makes the exposure gate `compliant:false`; Windows firewall state alone is never
+exposure proof.
