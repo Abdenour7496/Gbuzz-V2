@@ -92,6 +92,10 @@ ATTACHMENT_REPLAY_RETRIES = Counter("gcor_attachment_replay_retries_total", "Att
 ATTACHMENT_REPLAY_FAILURES = Counter("gcor_attachment_replay_failures_total", "Attachment replay failures")
 ATTACHMENT_REPLAY_TIMEOUTS = Counter("gcor_attachment_replay_timeouts_total", "Attachment replay timeouts")
 ATTACHMENT_FETCH_DURATION = Histogram("gcor_attachment_fetch_duration_seconds", "Attachment fetch duration")
+ATTACHMENT_STAGES = Counter("gcor_attachment_stage_total", "Attachment processing outcomes", ["stage"])
+ATTACHMENT_BYTES = Counter("gcor_attachment_bytes_total", "Verified attachment bytes received")
+ATTACHMENT_EXTRACTION_DURATION = Histogram("gcor_attachment_extraction_duration_seconds", "Attachment extraction duration")
+ATTACHMENT_REPROCESSING_AGE = Histogram("gcor_attachment_reprocessing_age_seconds", "Age of attachment when reprocessed")
 REMOTE_FETCH_BLOCKED = Counter("gcor_remote_fetch_blocked_total", "Remote URL fetch requests rejected by policy", ["reason"])
 HTTP_REQUESTS = Counter("gcor_http_requests_total", "GCOR HTTP responses", ["method", "status"])
 HTTP_REQUEST_DURATION = Histogram("gcor_http_request_duration_seconds", "GCOR HTTP request duration", ["method"])
@@ -1214,8 +1218,20 @@ async def ingest_payload(
         Metadata=object_metadata,
     )
 
+    is_attachment = metadata.get("record_type") in {"attachment", "buzz_attachment", "file_upload"}
+    if is_attachment:
+        for stage in ("discovered", "fetched", "verified"):
+            ATTACHMENT_STAGES.labels(stage=stage).inc()
+        ATTACHMENT_BYTES.inc(len(content))
+        if int(metadata.get("projection_attempt") or 1) > 1 and event_timestamp:
+            ATTACHMENT_REPROCESSING_AGE.observe(max(0, (now - parse_effective_time(event_timestamp, now)).total_seconds()))
     try:
-        content_text = extract_text(content, media_type)
+        if is_attachment:
+            with ATTACHMENT_EXTRACTION_DURATION.time():
+                content_text = extract_text(content, media_type)
+            ATTACHMENT_STAGES.labels(stage="extracted").inc()
+        else:
+            content_text = extract_text(content, media_type)
         chunks = chunk_text(content_text)
         if not chunks:
             raise ValueError("The supplied content contains no extractable text")
@@ -1223,6 +1239,8 @@ async def ingest_payload(
         if not archive_only and len(vectors) != len(chunks):
             raise ValueError("Embedding provider returned an unexpected number of vectors")
     except Exception as error:
+        if is_attachment:
+            ATTACHMENT_STAGES.labels(stage="failed").inc()
         error_text = str(getattr(error, "detail", error))[:2000]
         quarantine_body = (
             "# Content archived pending extraction\n\n"
@@ -1320,6 +1338,8 @@ async def ingest_payload(
     })
 
     if archive_only:
+        if is_attachment:
+            ATTACHMENT_STAGES.labels(stage="skipped").inc()
         manifest = build_record_manifest(
             record_id=record_id, document_id=None, title=title, source_uri=source_uri,
             media_type=media_type, content_sha256=digest, markdown_sha256=markdown_digest,
@@ -1399,6 +1419,8 @@ async def ingest_payload(
                     author_pubkey=author_pubkey, file_url=file_url, file_name=file_name,
                     metadata=metadata, session_record=session_record,
                 )
+                if is_attachment:
+                    ATTACHMENT_STAGES.labels(stage="indexed").inc()
                 return {
                     "document_id": str(document_id),
                     "record_id": str(record_id),
@@ -1432,6 +1454,8 @@ async def ingest_payload(
                     "INSERT INTO gcor.edges (source_id, target_id, relation) VALUES ($1, $2, 'CONTAINS')",
                     document_node_id, node_id,
                 )
+            if is_attachment:
+                ATTACHMENT_STAGES.labels(stage="indexed").inc()
             manifest = build_record_manifest(
                 record_id=record_id, document_id=document_id, title=title, source_uri=source_uri,
                 media_type=media_type, content_sha256=digest, markdown_sha256=markdown_digest,

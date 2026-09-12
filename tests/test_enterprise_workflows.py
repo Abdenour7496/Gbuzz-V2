@@ -19,13 +19,44 @@ class Parsing(unittest.TestCase):
         output=io.BytesIO()
         with zipfile.ZipFile(output,'w') as archive:
             archive.writestr('word/document.xml','<document><p><t>Policy</t></p><table><p><t>Value</t></p></table></document>')
-        self.assertIn('Policy\nValue',extract(output.getvalue(),'application/vnd.openxmlformats-officedocument.wordprocessingml.document'))
+        text=extract(output.getvalue(),'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        self.assertIn('[Paragraph 1]\nPolicy',text)
+        self.assertIn('Value',text)
+
+    def test_csv_cells_have_stable_anchors(self):
+        text=extract(b'Consultant,Hours\nMartin Bottos,78 hours\n','text/csv')
+        self.assertIn('[Sheet CSV Cell A2]\nMartin Bottos',text)
+        self.assertIn('[Sheet CSV Cell B2]\n78 hours',text)
+
+    def test_xlsx_cells_have_stable_sheet_anchors(self):
+        output=io.BytesIO()
+        with zipfile.ZipFile(output,'w') as archive:
+            archive.writestr('xl/workbook.xml','<workbook xmlns:r="rel"><sheet name="Timesheet" r:id="rId1"/></workbook>')
+            archive.writestr('xl/_rels/workbook.xml.rels','<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>')
+            archive.writestr('xl/sharedStrings.xml','<sst><si><t>Martin Bottos</t></si><si><t>78 hours</t></si></sst>')
+            archive.writestr('xl/worksheets/sheet1.xml','<worksheet><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></worksheet>')
+        text=extract(output.getvalue(),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        self.assertIn('[Sheet Timesheet Cell A1]\nMartin Bottos',text)
+        self.assertIn('[Sheet Timesheet Cell B1]\n78 hours',text)
 
     def test_xml_entity_declarations_are_rejected(self):
         output=io.BytesIO()
         with zipfile.ZipFile(output,'w') as archive:
             archive.writestr('word/document.xml','<!DOCTYPE x [<!ENTITY x "expanded">]><p>&x;</p>')
         with self.assertRaises(HTTPException):extract(output.getvalue(),'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+
+    def test_archive_expansion_limit_is_enforced(self):
+        output=io.BytesIO()
+        with zipfile.ZipFile(output,'w') as archive:
+            archive.writestr('word/document.xml',b'x'*(50*1024*1024+1))
+        with self.assertRaises(HTTPException):extract(output.getvalue(),'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+
+    def test_corrupt_and_truncated_office_files_fail_closed(self):
+        for body in (b'not-a-zip',b'PK\x03\x04truncated'):
+            with self.assertRaises(HTTPException):extract(body,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+    def test_missing_ocr_worker_fails_closed(self):
+        with self.assertRaises(HTTPException):extract(b'image','image/png')
 
 
 class WorkflowRoles(unittest.IsolatedAsyncioTestCase):
