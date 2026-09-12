@@ -97,6 +97,11 @@ ATTACHMENT_STAGES = Counter("gcor_attachment_stage_total", "Attachment processin
 ATTACHMENT_BYTES = Counter("gcor_attachment_bytes_total", "Verified attachment bytes received")
 ATTACHMENT_EXTRACTION_DURATION = Histogram("gcor_attachment_extraction_duration_seconds", "Attachment extraction duration")
 ATTACHMENT_REPROCESSING_AGE = Histogram("gcor_attachment_reprocessing_age_seconds", "Age of attachment when reprocessed")
+PARSER_IN_FLIGHT = Gauge("gcor_parser_in_flight", "Parser requests currently in flight")
+PARSER_REQUESTS = Counter("gcor_parser_requests_total", "Parser worker outcomes", ["status"])
+PARSER_DURATION = Histogram("gcor_parser_duration_seconds", "Parser worker request duration")
+PARSER_OUTPUT_BYTES = Counter("gcor_parser_output_bytes_total", "Validated parser output bytes")
+PARSER_CLEANUP_FAILURES = Counter("gcor_parser_cleanup_failures_total", "Parser cleanup failures")
 REMOTE_FETCH_BLOCKED = Counter("gcor_remote_fetch_blocked_total", "Remote URL fetch requests rejected by policy", ["reason"])
 HTTP_REQUESTS = Counter("gcor_http_requests_total", "GCOR HTTP responses", ["method", "status"])
 HTTP_REQUEST_DURATION = Histogram("gcor_http_request_duration_seconds", "GCOR HTTP request duration", ["method"])
@@ -252,7 +257,25 @@ def chunk_text(text: str) -> list[str]:
 
 def extract_text(content: bytes, media_type: str) -> str:
     if os.getenv("PARSER_SOCKET_PATH"):
-        return parse_isolated_document(content, media_type)
+        PARSER_IN_FLIGHT.inc()
+        started = time.perf_counter()
+        try:
+            result = parse_isolated_document(content, media_type)
+            PARSER_OUTPUT_BYTES.inc(len(result.encode("utf-8")))
+            PARSER_REQUESTS.labels(status="complete").inc()
+            return result
+        except TimeoutError:
+            PARSER_REQUESTS.labels(status="timeout").inc()
+            raise
+        except (ConnectionError, OSError):
+            PARSER_REQUESTS.labels(status="unavailable").inc()
+            raise
+        except Exception:
+            PARSER_REQUESTS.labels(status="rejected").inc()
+            raise
+        finally:
+            PARSER_DURATION.observe(time.perf_counter() - started)
+            PARSER_IN_FLIGHT.dec()
     return parse_document(content, media_type)
 
 
