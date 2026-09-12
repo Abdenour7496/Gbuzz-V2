@@ -20,6 +20,22 @@ CONFIG = json.dumps([{"sha256": hashlib.sha256(TOKEN.encode()).hexdigest(),
 
 
 class AccessTest(unittest.IsolatedAsyncioTestCase):
+    async def test_workload_identity_is_channel_and_operation_bound(self):
+        seen=[]
+        async def endpoint(scope,receive,send):
+            seen.append(current_principal.get())
+            await send({'type':'http.response.start','status':200,'headers':[]});await send({'type':'http.response.body','body':b'{}'})
+        token='projector-token'
+        config=json.dumps([{'sha256':hashlib.sha256(token.encode()).hexdigest(),'subject':'projector','operations':['ingest']}])
+        app=ScopedAccess(endpoint,mode='legacy',workloads=config)
+        auth={'X-Gcor-Workload-Authorization':f'Bearer {token}'}
+        good=auth|{'X-Gcor-Channel-Id':'11111111-1111-1111-1111-111111111111'}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
+            self.assertEqual((await client.post('/api/ingest',headers=good)).status_code,200)
+            self.assertEqual((await client.post('/api/retrieve',headers=good)).status_code,403)
+            self.assertEqual((await client.post('/api/ingest',headers=auth)).status_code,403)
+        self.assertTrue(seen[0].workload)
+        self.assertEqual(seen[0].channel_id,'11111111-1111-1111-1111-111111111111')
     async def test_fail_closed_routes_and_context(self):
         seen = []
         async def endpoint(scope, receive, send):
@@ -104,7 +120,7 @@ class NostrTest(unittest.IsolatedAsyncioTestCase):
         scope={'path':'/api/ask','method':'POST'}
         self.assertEqual((await auth.authenticate(token,scope,body)).access_level,'private')
         with self.assertRaises(PermissionError):
-            await auth.authenticate(token,scope,body)
+            await auth.authenticate(signed_event(PrivateKey(),body),scope,body)
         self.assertEqual(pool.fetchrow.await_count,2)
 
     async def test_nip98_proof_is_single_use(self):

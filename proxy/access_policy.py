@@ -19,12 +19,16 @@ class Principal:
     access_level: str
     agent_id: str | None = None
     role: str = 'reader'
+    workload: bool = False
+    operations: frozenset[str] = frozenset()
 
 
 WORKSPACE_PATHS = {'/api/workspace/channels', '/api/workspace/documents', '/api/workspace/detail',
                    '/api/workspace/review', '/api/workspace/feedback', '/api/workspace/jobs',
                    '/api/workspace/submit', '/api/workspace/job-action', '/api/audit-packs'}
 READ_PATHS = {'/api/ask', '/api/ask/reply', '/api/retrieve'}
+WORKLOAD_OPERATIONS = {'/api/ingest':'ingest','/api/retrieve':'retrieve','/api/ask':'retrieve',
+                       '/api/ask/reply':'reply','/api/audit-packs':'audit.export'}
 
 
 current_principal: ContextVar[Principal | None] = ContextVar("gcor_principal", default=None)
@@ -52,12 +56,29 @@ def load_credentials(raw: str) -> dict[str, Principal]:
     return result
 
 
+def load_workloads(raw: str) -> dict[str, Principal]:
+    entries=json.loads(raw)
+    if not isinstance(entries,list): raise ValueError('GCOR_WORKLOAD_CREDENTIALS must be a JSON array')
+    result={};allowed=frozenset(WORKLOAD_OPERATIONS.values())
+    for entry in entries:
+        if not isinstance(entry,dict) or set(entry)!={'sha256','subject','operations'}: raise ValueError('Invalid workload credential fields')
+        digest,subject,operations=entry['sha256'],entry['subject'],entry['operations']
+        if not isinstance(digest,str) or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest): raise ValueError('Invalid workload digest')
+        if not isinstance(subject,str) or not subject.strip() or not isinstance(operations,list) or not operations: raise ValueError('Workload requires subject and operations')
+        requested=frozenset(operations)
+        if not requested<=allowed or any(not isinstance(item,str) for item in operations): raise ValueError('Unknown workload operation')
+        if digest in result: raise ValueError('Duplicate workload digest')
+        result[digest]=Principal(subject,'','',role='service',workload=True,operations=requested)
+    return result
+
+
 class ScopedAccess:
-    def __init__(self, app, *, credentials: str = "[]", mode: str = "legacy", nostr=None):
+    def __init__(self, app, *, credentials: str = "[]", workloads: str = "[]", mode: str = "legacy", nostr=None):
         self.app = app
         if mode not in {"legacy", "scoped", "buzz"}:
             raise ValueError("GCOR_ACCESS_MODE must be legacy, scoped or buzz")
         self.credentials = load_credentials(credentials)
+        self.workloads = load_workloads(workloads)
         self.mode = mode
         self.nostr = nostr
         if mode == "buzz" and nostr is None:
@@ -75,7 +96,19 @@ class ScopedAccess:
         headers = dict(scope.get("headers", []))
         authorization = headers.get(b"authorization")
         principal = None
-        if authorization is not None:
+        workload_authorization=headers.get(b'x-gcor-workload-authorization')
+        if workload_authorization is not None:
+            scheme,_,token=workload_authorization.partition(b' ');operation=WORKLOAD_OPERATIONS.get(path)
+            template=self.workloads.get(hashlib.sha256(token).hexdigest()) if scheme.lower()==b'bearer' and token else None
+            channel=headers.get(b'x-gcor-channel-id',b'').decode('ascii',errors='ignore')
+            try:
+                from uuid import UUID
+                channel=str(UUID(channel))
+            except ValueError: channel=''
+            if template is None or not channel or operation not in template.operations or scope['method']!='POST':
+                return await JSONResponse({'detail':'Invalid workload identity, scope or operation'},status_code=403)(scope,receive,send)
+            principal=Principal(template.subject,channel,'private',role='service',workload=True,operations=template.operations)
+        if authorization is not None and principal is None:
             scheme, _, token = authorization.partition(b" ")
             if self.mode != "buzz" and scheme.lower() == b"bearer" and token and len(token) <= 16384:
                 principal = self.credentials.get(hashlib.sha256(token).hexdigest())
@@ -111,10 +144,10 @@ class ScopedAccess:
                     principal = None
             if principal is None:
                 return await JSONResponse({"detail": "Invalid scoped credential"}, status_code=401)(scope, receive, send)
-        elif self.mode in {"scoped", "buzz"}:
+        elif principal is None and self.mode in {"scoped", "buzz"}:
             return await JSONResponse({"detail": "Scoped credential required"}, status_code=401)(scope, receive, send)
         permitted = READ_PATHS | WORKSPACE_PATHS if self.mode == 'buzz' else READ_PATHS
-        if principal is not None and (scope["method"] != "POST" or path not in permitted):
+        if principal is not None and not principal.workload and (scope["method"] != "POST" or path not in permitted):
             return await JSONResponse({"detail": "Read-only credential cannot access this endpoint"}, status_code=403)(scope, receive, send)
         reset = current_principal.set(principal)
         try:

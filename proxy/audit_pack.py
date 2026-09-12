@@ -64,6 +64,10 @@ def _authorize(payload: AuditPackRequest) -> tuple[str, str]:
     principal = current_principal.get()
     if principal is None:
         return "stack-service", "service"
+    if principal.workload:
+        if 'audit.export' not in principal.operations or principal.channel_id != payload.channel_id:
+            raise HTTPException(403, 'Audit export workload is outside approved scope')
+        return principal.subject, 'service'
     if principal.channel_id != payload.channel_id:
         raise HTTPException(403, "Channel is outside the authenticated scope")
     if principal.role not in {"owner", "admin"}:

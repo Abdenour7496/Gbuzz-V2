@@ -124,6 +124,17 @@ class AuditPackUnitTests(unittest.TestCase):
         finally:
             current_principal.reset(token)
 
+    def test_export_workload_is_operation_and_channel_bound(self):
+        channel=str(uuid4());other=str(uuid4())
+        principal=Principal('audit-exporter',channel,'private',role='service',workload=True,operations=frozenset({'audit.export'}))
+        token=current_principal.set(principal)
+        try:
+            payload=audit_pack.AuditPackRequest(channel_id=channel,start_at=datetime.now(timezone.utc),end_at=datetime.now(timezone.utc)+timedelta(hours=1),purpose='Approved export')
+            self.assertEqual(audit_pack._authorize(payload),('audit-exporter','service'))
+            with self.assertRaisesRegex(Exception,'outside approved scope'):
+                audit_pack._authorize(payload.model_copy(update={'channel_id':other}))
+        finally: current_principal.reset(token)
+
 
 class AuditPackEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_pack_contains_verified_events_archive_and_attachment(self):

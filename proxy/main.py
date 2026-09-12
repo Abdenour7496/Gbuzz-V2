@@ -59,6 +59,7 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
 INGEST_WEBHOOK_SECRET = os.getenv("INGEST_WEBHOOK_SECRET", "")
 STACK_API_SECRET = os.getenv("STACK_API_SECRET", "") or INGEST_WEBHOOK_SECRET
 ENFORCE_STACK_API_SECRET = os.getenv("ENFORCE_STACK_API_SECRET", "true").strip().lower() in {"1", "true", "yes", "on"}
+REQUIRE_WORKLOAD_IDENTITY = os.getenv("REQUIRE_WORKLOAD_IDENTITY", "false").strip().lower() in {"1", "true", "yes", "on"}
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1200"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "180"))
 MAX_INGEST_FILE_BYTES = int(os.getenv("MAX_INGEST_FILE_BYTES", str(25 * 1024 * 1024)))
@@ -1113,7 +1114,8 @@ if os.getenv("GCOR_ACCESS_MODE", "legacy") == "buzz":
     from nostr_auth import BuzzIdentity
     nostr_validator = BuzzIdentity(app, os.environ["GCOR_PUBLIC_ORIGIN"])
 app.add_middleware(ScopedAccess, mode=os.getenv("GCOR_ACCESS_MODE", "legacy"),
-                   credentials=os.getenv("GCOR_SCOPED_CREDENTIALS", "[]"), nostr=nostr_validator)
+                   credentials=os.getenv("GCOR_SCOPED_CREDENTIALS", "[]"),
+                   workloads=os.getenv("GCOR_WORKLOAD_CREDENTIALS", "[]"), nostr=nostr_validator)
 app.add_middleware(
     RequestLimits, max_body_bytes=MAX_REQUEST_BODY_BYTES,
     max_in_flight=MAX_API_IN_FLIGHT, body_timeout=REQUEST_BODY_TIMEOUT_SECONDS,
@@ -1141,8 +1143,11 @@ def verify_webhook(secret: str | None) -> None:
 
 
 def verify_stack_api_secret(secret: str | None) -> None:
-    if current_principal.get() is not None:
+    principal=current_principal.get()
+    if principal is not None:
         return
+    if REQUIRE_WORKLOAD_IDENTITY:
+        raise HTTPException(401, "A channel-scoped workload identity is required")
     if not ENFORCE_STACK_API_SECRET:
         return
     if not STACK_API_SECRET:

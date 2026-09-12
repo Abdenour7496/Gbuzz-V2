@@ -19,6 +19,7 @@ POSTGRES = {
 PROXY_URL = os.getenv("GCOR_PROXY_URL", "http://gcor-proxy:5001").rstrip("/")
 RELAY_URL = os.getenv("BUZZ_RELAY_HTTP_URL", "http://relay:3000").rstrip("/")
 SECRET = os.getenv("STACK_API_SECRET", "") or os.environ["INGEST_WEBHOOK_SECRET"]
+WORKLOAD_TOKEN = os.getenv("PROJECTOR_WORKLOAD_TOKEN", "")
 POLL_SECONDS = float(os.getenv("PROJECTOR_POLL_SECONDS", "2"))
 BATCH_SIZE = int(os.getenv("PROJECTOR_BATCH_SIZE", "50"))
 KINDS = [int(value) for value in os.getenv("PROJECTOR_EVENT_KINDS", "9,40002,45001,45003").split(",") if value.strip()]
@@ -90,11 +91,14 @@ def internal_media_url(source_url: str) -> str:
 
 
 async def post_ingest(client: httpx.AsyncClient, data: dict[str, str], files: Any = None) -> dict[str, Any]:
+    headers = {"X-Gcor-Webhook-Secret": SECRET}
+    if WORKLOAD_TOKEN:
+        headers.update({"X-Gcor-Workload-Authorization": f"Bearer {WORKLOAD_TOKEN}", "X-Gcor-Channel-Id": data["channel_id"]})
     response = await client.post(
         f"{PROXY_URL}/api/ingest",
         data=data,
         files=files,
-        headers={"X-Gcor-Webhook-Secret": SECRET},
+        headers=headers,
     )
     response.raise_for_status()
     return response.json()
