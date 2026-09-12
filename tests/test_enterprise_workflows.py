@@ -65,6 +65,33 @@ class Parsing(unittest.TestCase):
         with self.assertRaises(HTTPException):extract(b'image','image/png')
 
 
+class AttachmentIdempotency(unittest.IsolatedAsyncioTestCase):
+    async def test_completed_digest_version_replay_has_no_side_effects(self):
+        existing = {
+            'document_id': uuid4(), 'record_id': uuid4(), 'chunks': 2,
+            'bucket': 'test', 'original_key': 'original',
+            'markdown_key': 'content.md', 'record_key': 'record.json',
+        }
+        pool = SimpleNamespace(fetchrow=AsyncMock(return_value=existing))
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=pool)))
+        discovered_before = main.ATTACHMENT_STAGES.labels(stage='discovered')._value.get()
+        with patch.object(main, 'extract_text') as extract_text, patch.object(main, 'embed') as embed:
+            result = await main.ingest_payload(
+                request, content=b'same attachment', media_type='text/plain', title='same.txt',
+                access_level='private', agent_id=None, source_uri='buzz://event/test#attachment:1',
+                channel_name='Test', channel_id=str(uuid4()), event_id='a' * 64,
+                event_kind='buzz.kind.9', event_timestamp='2026-01-01T00:00:00Z',
+                author_pubkey='b' * 64, file_url=None, file_name='same.txt',
+                metadata={'record_type': 'buzz_attachment', 'extraction_version': 'v1'},
+            )
+        self.assertTrue(result['deduplicated'])
+        self.assertTrue(result['idempotent_replay'])
+        self.assertEqual(2, result['chunks'])
+        self.assertEqual(discovered_before, main.ATTACHMENT_STAGES.labels(stage='discovered')._value.get())
+        extract_text.assert_not_called()
+        embed.assert_not_called()
+
+
 class WorkflowRoles(unittest.IsolatedAsyncioTestCase):
     def test_member_cannot_approve_guest_cannot_submit(self):
         for role,options in [('member',{'admin':True}),('guest',{'contributor':True}),('bot',{'contributor':True})]:

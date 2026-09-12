@@ -83,6 +83,55 @@ class _RetryClient(_StreamClient):
 
 
 class AttachmentFetchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_projection_uses_event_advisory_lock(self):
+        class Connection:
+            def __init__(self):
+                self.locked = False
+                self.statements = []
+
+            async def fetchval(self, statement, *_args):
+                self.statements.append(statement)
+                if "pg_try_advisory_lock" in statement:
+                    if self.locked:
+                        return False
+                    self.locked = True
+                    return True
+                return 1
+
+            async def execute(self, statement, *_args):
+                self.statements.append(statement)
+                if "pg_advisory_unlock" in statement:
+                    self.locked = False
+
+        class Acquire:
+            def __init__(self, connection): self.connection = connection
+            async def __aenter__(self): return self.connection
+            async def __aexit__(self, *_args): return None
+
+        class Pool:
+            def __init__(self): self.connection = Connection()
+            def acquire(self): return Acquire(self.connection)
+
+        pool = Pool()
+        row = {"event_id": "a" * 64}
+        calls = []
+        original = main._process_event
+
+        async def hold(_connection, _client, _row):
+            calls.append(_row["event_id"])
+            await __import__("asyncio").sleep(0.01)
+
+        main._process_event = hold
+        try:
+            await __import__("asyncio").gather(
+                main.process_event(pool, object(), row),
+                main.process_event(pool, object(), row),
+            )
+        finally:
+            main._process_event = original
+        self.assertEqual([row["event_id"]], calls)
+        self.assertTrue(any("pg_advisory_unlock" in item for item in pool.connection.statements))
+
     async def test_verifies_signed_size_and_hash(self):
         content = b"document"
         digest = __import__("hashlib").sha256(content).hexdigest()

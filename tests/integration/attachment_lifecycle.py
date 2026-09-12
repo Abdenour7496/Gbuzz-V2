@@ -35,6 +35,38 @@ async def run():
         assert await pool.fetchval('SELECT count(*) FROM gcor.documents WHERE id=$1',ids[0])==1
         await projector.invalidate_stale_evidence(pool)  # restart/reconciliation idempotency
         assert await pool.fetchval('SELECT count(*) FROM gcor.chunks WHERE document_id=$1',ids[1])==1
+
+        # Two projector replicas observing the same signed event may overlap. The
+        # event-scoped advisory lock permits exactly one ingest attempt; an
+        # ambiguous retry after completion is then excluded by the durable
+        # projection checkpoint.
+        projection_event = uuid4().hex * 2
+        row = {
+            'event_id': projection_event, 'kind': 9, 'channel_id': str(channel),
+            'created_at': datetime.now(timezone.utc), 'visibility': 'private',
+            'channel_name': 'Test', 'author_pubkey': 'a' * 64,
+            'content': 'Decision: one durable projection', 'tags': [],
+        }
+        calls = []
+        original_post = projector.post_ingest
+
+        async def slow_post(_client, _data, files=None):
+            calls.append(files)
+            await asyncio.sleep(0.1)
+            return {'status': 'indexed', 'document_id': str(ids[1]), 'record_id': None}
+
+        projector.post_ingest = slow_post
+        try:
+            await asyncio.gather(
+                projector.process_event(pool, object(), row),
+                projector.process_event(pool, object(), row),
+            )
+        finally:
+            projector.post_ingest = original_post
+        assert len(calls) == 1, calls
+        assert await pool.fetchval(
+            'SELECT attempts FROM gcor.event_projection WHERE event_id=$1', projection_event,
+        ) == 1
         print('attachment lifecycle reconciliation passed')
     finally:
         await pool.close()

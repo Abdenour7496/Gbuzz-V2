@@ -1210,6 +1210,32 @@ async def ingest_payload(
 
     digest = hashlib.sha256(content).hexdigest()
     identity_digest = document_identity(digest, access_level, agent_id, channel_id, channel_name, str(metadata.get("extraction_version") or ""))
+    existing_ingest = await request.app.state.pool.fetchrow(
+        """SELECT d.id AS document_id, r.id AS record_id, count(c.id)::int AS chunks,
+                  r.bucket, r.original_key, r.markdown_key, r.record_key
+           FROM gcor.documents d
+           JOIN gcor.ingestion_records r ON r.document_id=d.id AND r.status='indexed'
+           JOIN gcor.chunks c ON c.document_id=d.id
+           WHERE d.identity_sha256=$1
+             AND NOT COALESCE((d.metadata->>'derivatives_invalidated')::boolean,false)
+           GROUP BY d.id,r.id,r.bucket,r.original_key,r.markdown_key,r.record_key,r.created_at
+           ORDER BY r.created_at DESC LIMIT 1""",
+        identity_digest,
+    )
+    if existing_ingest:
+        return {
+            "document_id": str(existing_ingest["document_id"]),
+            "record_id": str(existing_ingest["record_id"]),
+            "deduplicated": True,
+            "idempotent_replay": True,
+            "status": "indexed",
+            "chunks": existing_ingest["chunks"],
+            "bucket": existing_ingest["bucket"],
+            "object_key": existing_ingest["original_key"],
+            "original_key": existing_ingest["original_key"],
+            "markdown_key": existing_ingest["markdown_key"],
+            "record_key": existing_ingest["record_key"],
+        }
     now = datetime.now(timezone.utc)
     parse_effective_time(event_timestamp, now)
     bucket_name = channel_bucket_name(channel_name) if channel_name else MINIO_BUCKET

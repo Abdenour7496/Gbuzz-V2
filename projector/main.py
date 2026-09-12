@@ -197,7 +197,7 @@ async def post_ingest(client: httpx.AsyncClient, data: dict[str, str], files: An
     return response.json()
 
 
-async def process_event(pool: asyncpg.Pool, client: httpx.AsyncClient, row: asyncpg.Record) -> None:
+async def _process_event(pool: Any, client: httpx.AsyncClient, row: asyncpg.Record) -> None:
     event_id = row["event_id"]
     projection_attempt = await pool.fetchval(
         """INSERT INTO gcor.event_projection
@@ -266,6 +266,23 @@ async def process_event(pool: asyncpg.Pool, client: httpx.AsyncClient, row: asyn
                   extraction_version=$5,error=NULL,updated_at=now() WHERE event_id=$1""",
         event_id, status, document_id, record_id, EXTRACTION_VERSION,
     )
+
+
+async def process_event(pool: asyncpg.Pool, client: httpx.AsyncClient, row: asyncpg.Record) -> None:
+    """Serialize one signed event across projector replicas and ambiguous retries."""
+    event_id = row["event_id"]
+    async with pool.acquire() as connection:
+        locked = await connection.fetchval(
+            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", event_id,
+        )
+        if not locked:
+            return
+        try:
+            await _process_event(connection, client, row)
+        finally:
+            await connection.execute(
+                "SELECT pg_advisory_unlock(hashtextextended($1, 0))", event_id,
+            )
 
 
 async def invalidate_stale_evidence(pool: asyncpg.Pool) -> int:
