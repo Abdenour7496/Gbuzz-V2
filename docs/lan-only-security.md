@@ -25,11 +25,16 @@ forwarding and UPnP exposure.
 Rollback removes only the named managed firewall rule and redeploys the prior
 loopback-only plan; it never opens a wildcard listener.
 
-Audit secret ACLs with `protect-gbuzz-secrets.ps1 -Mode Audit`. Apply replaces
+Audit secret ACLs with `protect-gbuzz-secrets.ps1 -Mode Audit`. Apply requires a
+dedicated protected MAC key file and replaces
 inheritance with Full Control for only the dedicated operating identity,
 Administrators, and SYSTEM, then verifies fail-closed. It records prior SDDL for
-rollback without reading or logging secrets. Rollback can restore the insecure
-old ACL, so use it only under controlled emergency approval.
+rollback without reading or logging secrets. The rollback manifest is bound to
+the host, operation, identity, canonical target-set digest, and run by HMAC.
+Reparse points, aliases, duplicate targets, added paths, and cross-host/run
+manifests are rejected. Apply verification is inside the transaction; any write
+or verification failure restores and reverifies every captured DACL. Rollback
+can restore the insecure old ACL, so use it only under controlled emergency approval.
 
 Public access later requires a named domain, authenticated TLS edge, certificate
 renewal monitoring, WebSocket forwarding, rate limits, origin/trusted-proxy
@@ -37,8 +42,20 @@ policy, penetration testing, and separate firewall/NAT approval. PostgreSQL,
 Redis, MinIO, Ollama, monitoring, and admin endpoints remain private.
 
 Production must use a digest lock. Render the exact Compose JSON and run
-`new-release-security-evidence.ps1`. It includes runtime and build-only images,
-requires every reference to use `@sha256:<64 hex>`, parses the vulnerability SARIF
-and blocks on findings, and requires exactly one verified signature and provenance
-record per image. Provenance must identify its builder and the exact Git commit.
-The resulting manifest hashes all inputs, SBOM, image list, and commit.
+`new-release-security-evidence.ps1` with an owner-approved trust policy. It includes
+runtime and build-only images, requires every reference to use `@sha256:<64 hex>`,
+validates non-empty SPDX package identities and successful SARIF tool invocations,
+and blocks HIGH/CRITICAL results. Image-signature and SLSA-provenance payloads are
+verified cryptographically against trusted public keys; identity, issuer, builder,
+subject digest, source commit, and materials must satisfy policy. Boolean
+`verified` assertions are not accepted. The resulting manifest hashes all inputs,
+SBOM, resolved image set, policy, and commit.
+
+`verify-lan-compose.ps1` uses `config/lan-compose.synthetic.env`, which contains
+only documented non-secret interpolation values, and renders the base, production,
+digest-lock, and LAN overlays from a clean worktree. It inspects every published
+port: relay must have exactly the approved LAN binding and every other published
+service must remain on loopback. Windows firewall audit additionally inventories
+active policy stores, protocol Any, port lists/ranges, address ranges/subnets,
+IPv6, NAT and portproxy. Docker/WSL forwarding and routed-client reachability remain
+separate required evidence; Windows firewall state alone is never exposure proof.
