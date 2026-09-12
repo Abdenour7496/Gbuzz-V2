@@ -18,7 +18,8 @@ approval to expose a service publicly or to replace production secrets.
 - [ ] `docker-compose.production.lock.yml` contains the approved image digests and commit-addressed Gbuzz images.
 - [ ] LAN deployments use `docker-compose.lan.yml`, an explicit RFC1918 host address, and a Windows firewall rule limited to the approved client CIDR.
 - [ ] Secret-bearing paths pass `protect-gbuzz-secrets.ps1 -Mode Audit` for only the operating identity, Administrators and SYSTEM.
-- [ ] The resolved Compose JSON, SPDX SBOM and vulnerability report are bound to the exact commit and digest image list by `new-release-security-evidence.ps1`.
+- [ ] The resolved Compose JSON, per-image SPDX 2.3 SBOM and approved-scanner SARIF are bound one-to-one to every runtime/build digest by `new-release-security-evidence.ps1`; its protected configuration pins the owner-authenticated policy ID/version/digest/key and canonical deployment repository.
+- [ ] Effective-path and allowed/excluded routed-client evidence is present; a compliant local Windows rule without both proofs is recorded as `compliant:false`.
 - [ ] `scripts/verify-production-pins.ps1` passes against the deployment lock overlay.
 - [ ] Secrets come from the deployment platform; `.env` and backup files are absent from the release artifact.
 - [ ] External endpoints terminate behind deployment-approved TLS and authentication.
