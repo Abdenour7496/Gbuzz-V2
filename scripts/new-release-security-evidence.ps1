@@ -7,7 +7,6 @@ param(
   [Parameter(Mandatory)][string]$SignatureReport,
   [Parameter(Mandatory)][string]$ProvenanceReport,
   [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9._-]+$')][string]$PolicyId,
-  [Parameter(Mandatory)][string]$ProtectedConfiguration,
   [string]$OutputPath='release-security-evidence.json'
 )
 $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
@@ -29,10 +28,12 @@ function Verify-Rsa($Record,$Key,[string]$Kind) {
   try{$data=[Convert]::FromBase64String([string]$Record.payload_b64);$sig=[Convert]::FromBase64String([string]$Record.signature_b64);$rsa=[Security.Cryptography.RSA]::Create();$p=[Security.Cryptography.RSAParameters]::new();$p.Modulus=[Convert]::FromBase64String([string]$Key.modulus_b64);$p.Exponent=[Convert]::FromBase64String([string]$Key.exponent_b64);$rsa.ImportParameters($p);if($rsa.KeySize-lt3072-or-not$rsa.VerifyData($data,$sig,[Security.Cryptography.HashAlgorithmName]::SHA256,[Security.Cryptography.RSASignaturePadding]::Pkcs1)){throw 'invalid'};$data=[Text.Encoding]::UTF8.GetString($data)|ConvertFrom-Json -ErrorAction Stop} catch {throw "$Kind cryptographic verification failed."};$data
 }
 
+$ProtectedConfiguration='C:\ProgramData\Gbuzz\trust\owner-bootstrap.json'
+$compiledDigestPath=Join-Path (Split-Path -Parent $PSScriptRoot) 'config\owner-bootstrap.sha256';$pinnedBootstrapDigest=(Get-Content -LiteralPath $compiledDigestPath -Raw).Trim();if($pinnedBootstrapDigest-notmatch'^[0-9a-f]{64}$'-or(Get-FileHash -LiteralPath $ProtectedConfiguration -Algorithm SHA256).Hash.ToLowerInvariant()-cne$pinnedBootstrapDigest){throw 'Owner trust bootstrap does not match compiled approved digest.'}
 $config=Read-Json $ProtectedConfiguration
 if($config.schema_version-ne1-or-not$config.approved_root){throw 'Protected configuration schema is unsupported.'}
 $configPath=Assert-ProtectedFile $ProtectedConfiguration ([string]$config.approved_root)
-$entry=@($config.policies|Where-Object{$_.policy_id-ceq$PolicyId});if($entry.Count-ne1){throw 'Policy ID is not independently approved.'}
+$entry=@($config.policies|Where-Object{$_.policy_id-ceq$PolicyId-and$_.purpose-ceq'release_security_evidence'});if($entry.Count-ne1){throw 'Policy ID/purpose is not independently approved.'}
 $policyPath=Assert-ProtectedFile ([string]$entry.path) ([string]$config.approved_root)
 if((Hash $policyPath)-cne[string]$entry.sha256){throw 'Approved policy digest mismatch.'}
 $policy=Read-Json $policyPath

@@ -82,3 +82,15 @@ policy digests, shared run ID/nonce, tool/version, and a fresh UTC interval.
 or mismatched evidence cannot satisfy activation. Missing or invalid evidence
 makes the exposure gate `compliant:false`; Windows firewall state alone is never
 exposure proof.
+
+Both release and LAN-exposure policies terminate at the same fixed installation
+bootstrap, `C:\ProgramData\Gbuzz\trust\owner-bootstrap.json`, whose exact SHA-256
+is pinned by the deployed, reviewed `config/owner-bootstrap.sha256`. Callers can
+name only a child policy ID. The bootstrap pins each child policy's purpose,
+path, digest, version, signer key ID, and owner public key. Exposure child policies
+must have purpose `lan_exposure_activation`; release policies must have purpose
+`release_security_evidence`, preventing cross-use. The committed all-zero digest
+is deliberately non-activating. Provisioning or rotation requires a separate
+owner-authorized change that installs the protected bootstrap and child policy,
+updates the reviewed digest pin, and reruns both policy suites; an activating
+administrator may not update this pin as part of activation.
