@@ -8,9 +8,15 @@ from fastapi import HTTPException
 from access_policy import Principal,current_principal
 from enterprise_workflows import identity,submit,Submission,process_one
 from document_parsing import extract
+import main
 
 
 class Parsing(unittest.TestCase):
+    def test_extraction_version_changes_document_identity(self):
+        args=('a'*64,'private',None,'channel','Channel')
+        self.assertEqual(main.document_identity(*args,'v1'),main.document_identity(*args,'v1'))
+        self.assertNotEqual(main.document_identity(*args,'v1'),main.document_identity(*args,'v2'))
+
     def test_binary_and_invalid_utf8_are_rejected(self):
         for body,kind in [(b'\xff','text/plain'),(b'PK\x00','application/octet-stream'),(b'x','application/msword')]:
             with self.assertRaises(HTTPException): extract(body,kind)

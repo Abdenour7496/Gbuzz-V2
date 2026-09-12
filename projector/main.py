@@ -26,6 +26,7 @@ KINDS = [int(value) for value in os.getenv("PROJECTOR_EVENT_KINDS", "9,40002,450
 KNOWLEDGE_MODE = os.getenv("PROJECTOR_KNOWLEDGE_MODE", "selective").strip().casefold()
 MAX_ATTACHMENT_BYTES = int(os.getenv("PROJECTOR_MAX_ATTACHMENT_BYTES", str(50 * 1024 * 1024)))
 ATTACHMENT_FETCH_ATTEMPTS = int(os.getenv("PROJECTOR_ATTACHMENT_FETCH_ATTEMPTS", "3"))
+EXTRACTION_VERSION = os.getenv("PROJECTOR_EXTRACTION_VERSION", "gcor.parser.v1")
 HEX_64 = re.compile(r"^[0-9a-fA-F]{64}$")
 MEDIA_SUFFIXES = {
     "application/pdf": {".pdf"},
@@ -252,6 +253,7 @@ async def process_event(pool: asyncpg.Pool, client: httpx.AsyncClient, row: asyn
                     "attachment_sha256": attachment_sha256,
                     "attachment_size": len(attachment_content),
                     "projection_attempt": projection_attempt,
+                    "extraction_version": EXTRACTION_VERSION,
                 }),
             },
             files={"file": (file_name, attachment_content, media_type)},
@@ -261,9 +263,23 @@ async def process_event(pool: asyncpg.Pool, client: httpx.AsyncClient, row: asyn
     record_id = last_result.get("record_id") if last_result else None
     await pool.execute(
         """UPDATE gcor.event_projection SET status=$2,document_id=$3::uuid,record_id=$4::uuid,
-                  error=NULL,updated_at=now() WHERE event_id=$1""",
-        event_id, status, document_id, record_id,
+                  extraction_version=$5,error=NULL,updated_at=now() WHERE event_id=$1""",
+        event_id, status, document_id, record_id, EXTRACTION_VERSION,
     )
+
+
+async def invalidate_stale_evidence(pool: asyncpg.Pool) -> int:
+    """Expire derived nodes when their event/channel or governed document is no longer current."""
+    result = await pool.execute(
+        """UPDATE gcor.nodes n SET valid_to=now()
+           FROM gcor.documents d
+           LEFT JOIN public.events e ON encode(e.id,'hex')=d.metadata->>'parent_event_id'
+           LEFT JOIN public.channels c ON c.id::text=d.metadata->>'channel_id'
+           WHERE n.document_id=d.id AND n.valid_to IS NULL
+             AND d.metadata->>'record_type'='buzz_attachment'
+             AND (e.deleted_at IS NOT NULL OR c.deleted_at IS NOT NULL OR c.archived_at IS NOT NULL
+                  OR d.metadata->>'knowledge_state' IN ('archived','rejected','superseded'))""")
+    return int(result.rsplit(" ", 1)[-1])
 
 
 async def run() -> None:
@@ -273,6 +289,7 @@ async def run() -> None:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             while True:
                 __import__('pathlib').Path('/tmp/projector-heartbeat').touch()
+                await invalidate_stale_evidence(pool)
                 rows = await pool.fetch(
                     """SELECT encode(e.id,'hex') AS event_id,e.kind,e.created_at,e.channel_id::text,
                               c.name AS channel_name,c.visibility::text AS visibility,encode(e.pubkey,'hex') AS author_pubkey,
@@ -280,9 +297,10 @@ async def run() -> None:
                        FROM events e JOIN channels c ON c.id=e.channel_id
                        LEFT JOIN gcor.event_projection p ON p.event_id=encode(e.id,'hex')
                        WHERE e.deleted_at IS NULL AND e.channel_id IS NOT NULL AND e.kind=ANY($1::int[])
-                         AND (p.event_id IS NULL OR (p.status='failed' AND p.updated_at < now()-interval '10 seconds'))
+                         AND (p.event_id IS NULL OR p.extraction_version IS DISTINCT FROM $3
+                              OR (p.status='failed' AND p.updated_at < now()-interval '10 seconds'))
                        ORDER BY e.created_at,e.id LIMIT $2""",
-                    KINDS, BATCH_SIZE,
+                    KINDS, BATCH_SIZE, EXTRACTION_VERSION,
                 )
                 for row in rows:
                     __import__('pathlib').Path('/tmp/projector-heartbeat').touch()

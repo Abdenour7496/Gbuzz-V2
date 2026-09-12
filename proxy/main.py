@@ -303,6 +303,7 @@ def document_identity(
     agent_id: str | None,
     channel_id: str | None,
     channel_name: str | None,
+    extraction_version: str | None = None,
 ) -> str:
     """Deduplicate only inside the same governance and channel boundary."""
     scope = "\x1f".join([
@@ -311,6 +312,7 @@ def document_identity(
         agent_id or "",
         channel_id or "",
         channel_name or "",
+        extraction_version or "",
     ])
     return hashlib.sha256(scope.encode("utf-8")).hexdigest()
 
@@ -1184,7 +1186,7 @@ async def ingest_payload(
         raise HTTPException(413, f"payload exceeds MAX_INGEST_FILE_BYTES ({MAX_INGEST_FILE_BYTES})")
 
     digest = hashlib.sha256(content).hexdigest()
-    identity_digest = document_identity(digest, access_level, agent_id, channel_id, channel_name)
+    identity_digest = document_identity(digest, access_level, agent_id, channel_id, channel_name, str(metadata.get("extraction_version") or ""))
     now = datetime.now(timezone.utc)
     parse_effective_time(event_timestamp, now)
     bucket_name = channel_bucket_name(channel_name) if channel_name else MINIO_BUCKET

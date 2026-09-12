@@ -127,6 +127,16 @@ class AttachmentFetchTest(unittest.IsolatedAsyncioTestCase):
                 "url": "http://desktop/media/" + "b" * 64, "size": "7", "sha256": "a" * 64,
             })
 
+    async def test_invalidation_expires_derived_nodes(self):
+        class Pool:
+            async def execute(self, statement):
+                self.statement = statement
+                return "UPDATE 3"
+        pool = Pool()
+        self.assertEqual(3, await main.invalidate_stale_evidence(pool))
+        self.assertIn("valid_to=now()", pool.statement)
+        self.assertIn("superseded", pool.statement)
+
 
 if __name__ == "__main__":
     unittest.main()
