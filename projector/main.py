@@ -93,7 +93,8 @@ def internal_media_url(source_url: str) -> str:
 async def post_ingest(client: httpx.AsyncClient, data: dict[str, str], files: Any = None) -> dict[str, Any]:
     headers = {"X-Gcor-Webhook-Secret": SECRET}
     if WORKLOAD_TOKEN:
-        headers.update({"X-Gcor-Workload-Authorization": f"Bearer {WORKLOAD_TOKEN}", "X-Gcor-Channel-Id": data["channel_id"]})
+        headers.update({"X-Gcor-Workload-Authorization": f"Bearer {WORKLOAD_TOKEN}", "X-Gcor-Channel-Id": data["channel_id"],
+                        "X-Gcor-Access-Level": data["access_level"]})
     response = await client.post(
         f"{PROXY_URL}/api/ingest",
         data=data,

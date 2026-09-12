@@ -37,6 +37,7 @@ class AuditPackRequest(BaseModel):
     end_at: datetime
     include_attachments: bool = True
     purpose: str = Field(min_length=3, max_length=500)
+    approval_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
 
 
 def _stack_secret(value: str | None) -> None:
@@ -67,6 +68,8 @@ def _authorize(payload: AuditPackRequest) -> tuple[str, str]:
     if principal.workload:
         if 'audit.export' not in principal.operations or principal.channel_id != payload.channel_id:
             raise HTTPException(403, 'Audit export workload is outside approved scope')
+        if not payload.approval_id:
+            raise HTTPException(403, 'Audit export workload requires an approved request context')
         return principal.subject, 'service'
     if principal.channel_id != payload.channel_id:
         raise HTTPException(403, "Channel is outside the authenticated scope")
@@ -289,6 +292,7 @@ async def create_audit_pack(
         "pack_id": str(pack_id),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "purpose": payload.purpose,
+        "approval_id": payload.approval_id,
         "scope": {"channel_id": payload.channel_id, "channel_name": channel["name"], "start_at": start_at.isoformat(), "end_at": end_at.isoformat(), "access_level": access_level},
         "requester": {"subject": requested_by, "role": requester_role},
         "counts": {"events": len(events), "archive_records": len(records), "attachments": attachment_count},

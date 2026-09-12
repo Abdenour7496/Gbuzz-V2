@@ -129,7 +129,7 @@ class AuditPackUnitTests(unittest.TestCase):
         principal=Principal('audit-exporter',channel,'private',role='service',workload=True,operations=frozenset({'audit.export'}))
         token=current_principal.set(principal)
         try:
-            payload=audit_pack.AuditPackRequest(channel_id=channel,start_at=datetime.now(timezone.utc),end_at=datetime.now(timezone.utc)+timedelta(hours=1),purpose='Approved export')
+            payload=audit_pack.AuditPackRequest(channel_id=channel,start_at=datetime.now(timezone.utc),end_at=datetime.now(timezone.utc)+timedelta(hours=1),purpose='Approved export',approval_id='a'*64)
             self.assertEqual(audit_pack._authorize(payload),('audit-exporter','service'))
             with self.assertRaisesRegex(Exception,'outside approved scope'):
                 audit_pack._authorize(payload.model_copy(update={'channel_id':other}))

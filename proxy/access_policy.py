@@ -101,13 +101,14 @@ class ScopedAccess:
             scheme,_,token=workload_authorization.partition(b' ');operation=WORKLOAD_OPERATIONS.get(path)
             template=self.workloads.get(hashlib.sha256(token).hexdigest()) if scheme.lower()==b'bearer' and token else None
             channel=headers.get(b'x-gcor-channel-id',b'').decode('ascii',errors='ignore')
+            access_level=headers.get(b'x-gcor-access-level',b'').decode('ascii',errors='ignore')
             try:
                 from uuid import UUID
                 channel=str(UUID(channel))
             except ValueError: channel=''
-            if template is None or not channel or operation not in template.operations or scope['method']!='POST':
+            if template is None or not channel or access_level not in {'public','private'} or operation not in template.operations or scope['method']!='POST':
                 return await JSONResponse({'detail':'Invalid workload identity, scope or operation'},status_code=403)(scope,receive,send)
-            principal=Principal(template.subject,channel,'private',role='service',workload=True,operations=template.operations)
+            principal=Principal(template.subject,channel,access_level,role='service',workload=True,operations=template.operations)
         if authorization is not None and principal is None:
             scheme, _, token = authorization.partition(b" ")
             if self.mode != "buzz" and scheme.lower() == b"bearer" and token and len(token) <= 16384:

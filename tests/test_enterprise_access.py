@@ -29,7 +29,7 @@ class AccessTest(unittest.IsolatedAsyncioTestCase):
         config=json.dumps([{'sha256':hashlib.sha256(token.encode()).hexdigest(),'subject':'projector','operations':['ingest']}])
         app=ScopedAccess(endpoint,mode='legacy',workloads=config)
         auth={'X-Gcor-Workload-Authorization':f'Bearer {token}'}
-        good=auth|{'X-Gcor-Channel-Id':'11111111-1111-1111-1111-111111111111'}
+        good=auth|{'X-Gcor-Channel-Id':'11111111-1111-1111-1111-111111111111','X-Gcor-Access-Level':'private'}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
             self.assertEqual((await client.post('/api/ingest',headers=good)).status_code,200)
             self.assertEqual((await client.post('/api/retrieve',headers=good)).status_code,403)
