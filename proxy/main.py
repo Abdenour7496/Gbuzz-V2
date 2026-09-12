@@ -95,8 +95,6 @@ ATTACHMENT_FETCH_DURATION = Histogram("gcor_attachment_fetch_duration_seconds", 
 REMOTE_FETCH_BLOCKED = Counter("gcor_remote_fetch_blocked_total", "Remote URL fetch requests rejected by policy", ["reason"])
 HTTP_REQUESTS = Counter("gcor_http_requests_total", "GCOR HTTP responses", ["method", "status"])
 HTTP_REQUEST_DURATION = Histogram("gcor_http_request_duration_seconds", "GCOR HTTP request duration", ["method"])
-GRAPHITI_PROJECTION = Gauge("gcor_graphiti_projection_entries", "Graphiti projection entries by status", ["status"])
-GRAPHITI_OLDEST_UNFINISHED = Gauge("gcor_graphiti_oldest_unfinished_seconds", "Age of the oldest unfinished Graphiti projection entry")
 GOVERNANCE_PENDING = Gauge("gcor_governance_pending_events", "Governance events awaiting object storage publication")
 GOVERNANCE_RETRYING = Gauge("gcor_governance_retrying_events", "Unpublished governance events with failed publication attempts")
 GOVERNANCE_OLDEST = Gauge("gcor_governance_oldest_pending_seconds", "Age of oldest unpublished governance event")
@@ -2954,25 +2952,6 @@ async def metrics(request: Request):
         oldest=await request.app.state.pool.fetchval("SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM gcor.ingestion_jobs WHERE status IN ('pending','processing')")
         heartbeat=await request.app.state.pool.fetchval("SELECT EXTRACT(EPOCH FROM now()-seen_at) FROM gcor.worker_heartbeats WHERE worker='ingestion'")
         INGESTION_AGE.set(float(oldest or 0));INGESTION_HEARTBEAT.set(float(heartbeat) if heartbeat is not None else 86400)
-    row = await request.app.state.pool.fetchrow(
-        """
-        SELECT count(*) FILTER (WHERE status='pending') AS pending,
-               count(*) FILTER (WHERE status='processing') AS processing,
-               count(*) FILTER (WHERE status='submitted' AND reconciled_at IS NULL) AS in_flight,
-               count(*) FILTER (WHERE status='failed' AND attempts >= $1) AS dead_letter,
-               EXTRACT(EPOCH FROM (
-                   now() - min(created_at) FILTER (
-                       WHERE status IN ('pending','processing','failed')
-                          OR (status='submitted' AND reconciled_at IS NULL)
-                   )
-               )) AS oldest_unfinished_seconds
-        FROM gcor.graphiti_projection
-        """,
-        int(os.getenv("GRAPHITI_PROJECTOR_MAX_ATTEMPTS", "8")),
-    )
-    for status in ("pending", "processing", "in_flight", "dead_letter"):
-        GRAPHITI_PROJECTION.labels(status=status).set(int(row[status] or 0))
-    GRAPHITI_OLDEST_UNFINISHED.set(float(row["oldest_unfinished_seconds"] or 0))
     if request.app.state.governance_available:
         governance = await request.app.state.pool.fetchrow(
             """SELECT count(*) AS pending, count(*) FILTER(WHERE attempts>0) AS retrying,

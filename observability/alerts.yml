@@ -64,20 +64,27 @@ groups:
           severity: warning
         annotations:
           summary: Governance audit events are retrying object storage publication
-      - alert: GraphitiProjectionDeadLetter
-        expr: gcor_graphiti_projection_entries{status="dead_letter"} > 0 and on() gbuzz_recovery_service_healthy{service="graphiti-projector"}
-        for: 1m
+      - alert: GbuzzBackupFailed
+        expr: gbuzz_backup_last_run_success == 0
+        for: 5m
         labels:
           severity: critical
         annotations:
-          summary: Graphiti projection has dead-letter entries
-      - alert: GraphitiProjectionLagHigh
-        expr: gcor_graphiti_oldest_unfinished_seconds > 900 and on() gbuzz_recovery_service_healthy{service="graphiti-projector"}
-        for: 5m
+          summary: Most recent Gbuzz backup failed verification
+      - alert: GbuzzBackupTooOld
+        expr: time() - gbuzz_backup_last_success_unixtime > 21600
+        for: 15m
         labels:
-          severity: warning
+          severity: critical
         annotations:
-          summary: Oldest unfinished Graphiti projection exceeds 15 minutes
+          summary: No verified Gbuzz backup has completed within the six-hour RPO
+      - alert: GbuzzBackupMetricsMissing
+        expr: absent(gbuzz_backup_last_success_unixtime)
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Gbuzz backup telemetry is missing
       - alert: PostgresConnectionsNearLimit
         expr: sum(pg_stat_activity_count) / min(pg_settings_max_connections) > 0.8
         for: 5m

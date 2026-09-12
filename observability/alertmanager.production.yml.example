@@ -6,6 +6,11 @@ route:
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
+  routes:
+    - receiver: production-on-call
+      matchers:
+        - severity="critical"
+      repeat_interval: 10m
 
 receivers:
   - name: production-on-call

@@ -107,8 +107,13 @@ services:
     restart: unless-stopped
     command:
       - --path.rootfs=/host
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile
     volumes:
       - /:/host:ro
+      - type: bind
+        source: ${BACKUP_METRICS_DIR:-C:/ProgramData/Gbuzz/backup-metrics}
+        target: /var/lib/node_exporter/textfile
+        read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]

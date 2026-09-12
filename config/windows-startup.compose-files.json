@@ -1,0 +1,15 @@
+{
+  "project": "gbuzz",
+  "files": [
+    "docker-compose.yml",
+    "docker-compose.safeguards.override.json",
+    "docker-compose.enterprise.yml",
+    "docker-compose.observability.yml",
+    "docker-compose.buzz.yml"
+  ],
+  "profiles": ["observability"],
+  "required_services": [
+    "relay", "postgres", "redis", "minio", "ollama", "gcor-proxy",
+    "gcor-event-projector", "mcp-postgres-gcor", "recovery-controller"
+  ]
+}
