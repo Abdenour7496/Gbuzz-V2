@@ -132,7 +132,11 @@ jobs:
         run: ./tests/test_reliability_powershell.ps1
       - name: LAN security negative tests
         shell: powershell
-        run: ./tests/test_lan_security.ps1
+        run: |
+          ./tests/test_lan_security.ps1
+          ./tests/test_release_evidence_behavior.ps1
+          ./tests/test_lan_firewall_behavior.ps1
+          ./tests/test_lan_acl_behavior.ps1
 
   integration:
     name: Integration lifecycle
