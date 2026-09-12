@@ -130,6 +130,9 @@ jobs:
       - uses: actions/checkout@v4
       - shell: powershell
         run: ./tests/test_reliability_powershell.ps1
+      - name: LAN security negative tests
+        shell: powershell
+        run: ./tests/test_lan_security.ps1
 
   integration:
     name: Integration lifecycle
