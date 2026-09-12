@@ -1,7 +1,10 @@
 import hashlib
 import json
+import logging
+import io
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -20,6 +23,25 @@ CONFIG = json.dumps([{"sha256": hashlib.sha256(TOKEN.encode()).hexdigest(),
 
 
 class AccessTest(unittest.IsolatedAsyncioTestCase):
+    async def test_workload_rotation_and_revocation_are_config_deterministic(self):
+        async def endpoint(scope,receive,send):
+            await send({'type':'http.response.start','status':200,'headers':[]})
+            await send({'type':'http.response.body','body':b'{}'})
+        old,new='old-projector-token','new-projector-token'
+        def config(token):
+            return json.dumps([{'sha256':hashlib.sha256(token.encode()).hexdigest(),
+                                'subject':'projector','operations':['ingest']}])
+        scope={'X-Gcor-Channel-Id':'11111111-1111-1111-1111-111111111111',
+               'X-Gcor-Access-Level':'private'}
+        before=ScopedAccess(endpoint,mode='legacy',workloads=config(old))
+        after=ScopedAccess(endpoint,mode='legacy',workloads=config(new))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(before),base_url='http://test') as client:
+            self.assertEqual((await client.post('/api/ingest',headers=scope|{'X-Gcor-Workload-Authorization':f'Bearer {old}'})).status_code,200)
+            self.assertEqual((await client.post('/api/ingest',headers=scope|{'X-Gcor-Workload-Authorization':f'Bearer {new}'})).status_code,403)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(after),base_url='http://test') as client:
+            self.assertEqual((await client.post('/api/ingest',headers=scope|{'X-Gcor-Workload-Authorization':f'Bearer {old}'})).status_code,403)
+            self.assertEqual((await client.post('/api/ingest',headers=scope|{'X-Gcor-Workload-Authorization':f'Bearer {new}'})).status_code,200)
+
     async def test_workload_identity_is_channel_and_operation_bound(self):
         seen=[]
         async def endpoint(scope,receive,send):
@@ -30,10 +52,15 @@ class AccessTest(unittest.IsolatedAsyncioTestCase):
         app=ScopedAccess(endpoint,mode='legacy',workloads=config)
         auth={'X-Gcor-Workload-Authorization':f'Bearer {token}'}
         good=auth|{'X-Gcor-Channel-Id':'11111111-1111-1111-1111-111111111111','X-Gcor-Access-Level':'private'}
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
-            self.assertEqual((await client.post('/api/ingest',headers=good)).status_code,200)
-            self.assertEqual((await client.post('/api/retrieve',headers=good)).status_code,403)
-            self.assertEqual((await client.post('/api/ingest',headers=auth)).status_code,403)
+        captured=io.StringIO();handler=logging.StreamHandler(captured);logging.getLogger().addHandler(handler)
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
+                self.assertEqual((await client.post('/api/ingest',headers=good)).status_code,200)
+                self.assertEqual((await client.post('/api/retrieve',headers=good)).status_code,403)
+                self.assertEqual((await client.post('/api/ingest',headers=auth)).status_code,403)
+        finally:
+            logging.getLogger().removeHandler(handler)
+        self.assertNotIn(token,captured.getvalue())
         self.assertTrue(seen[0].workload)
         self.assertEqual(seen[0].channel_id,'11111111-1111-1111-1111-111111111111')
     async def test_fail_closed_routes_and_context(self):
@@ -81,6 +108,16 @@ class AccessTest(unittest.IsolatedAsyncioTestCase):
         for mode, config in [('scoped','[]'), ('typo',CONFIG), ('legacy','{}')]:
             with self.assertRaises(ValueError):
                 ScopedAccess(None,mode=mode,credentials=config)
+
+    def test_production_compose_enforces_workload_boundary(self):
+        root=Path(__file__).resolve().parents[1]
+        production=(root/'docker-compose.production.yml').read_text(encoding='utf-8')
+        integration=(root/'docker-compose.integration.yml').read_text(encoding='utf-8')
+        self.assertIn('REQUIRE_WORKLOAD_IDENTITY: "true"',production)
+        self.assertNotIn('GCOR_ALLOW_UNSCOPED_LEGACY',production)
+        self.assertIn('GCOR_ALLOW_UNSCOPED_LEGACY: "true"',integration)
+        self.assertNotIn('PROJECTOR_WORKLOAD_TOKEN:',production)
+        self.assertNotRegex(production,r'(?m)^\s+GCOR_WORKLOAD_CREDENTIALS:\s*\[')
 
 
 def signed_event(key, body=b'{}', url='http://test/api/ask', **changes):
