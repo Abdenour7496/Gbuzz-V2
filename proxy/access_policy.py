@@ -73,7 +73,8 @@ def load_workloads(raw: str) -> dict[str, Principal]:
 
 
 class ScopedAccess:
-    def __init__(self, app, *, credentials: str = "[]", workloads: str = "[]", mode: str = "legacy", nostr=None):
+    def __init__(self, app, *, credentials: str = "[]", workloads: str = "[]", mode: str = "legacy", nostr=None,
+                 allow_legacy_unscoped: bool = False):
         self.app = app
         if mode not in {"legacy", "scoped", "buzz"}:
             raise ValueError("GCOR_ACCESS_MODE must be legacy, scoped or buzz")
@@ -81,6 +82,7 @@ class ScopedAccess:
         self.workloads = load_workloads(workloads)
         self.mode = mode
         self.nostr = nostr
+        self.allow_legacy_unscoped = allow_legacy_unscoped
         if mode == "buzz" and nostr is None:
             raise ValueError("Buzz mode requires Nostr configuration")
         if mode == "scoped" and not self.credentials:
@@ -147,6 +149,8 @@ class ScopedAccess:
                 return await JSONResponse({"detail": "Invalid scoped credential"}, status_code=401)(scope, receive, send)
         elif principal is None and self.mode in {"scoped", "buzz"}:
             return await JSONResponse({"detail": "Scoped credential required"}, status_code=401)(scope, receive, send)
+        elif principal is None and self.mode == 'legacy' and self.allow_legacy_unscoped:
+            principal=Principal('ingestion-worker','','',role='service',workload=True)
         permitted = READ_PATHS | WORKSPACE_PATHS if self.mode == 'buzz' else READ_PATHS
         if principal is not None and not principal.workload and (scope["method"] != "POST" or path not in permitted):
             return await JSONResponse({"detail": "Read-only credential cannot access this endpoint"}, status_code=403)(scope, receive, send)

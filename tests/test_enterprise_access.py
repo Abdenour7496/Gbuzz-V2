@@ -160,9 +160,17 @@ class EvidenceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_answer_and_citations_share_same_evidence_limit(self):
         rows=[{'id':str(i),'node_id':str(i),'document_id':str(i),'title':str(i),
-               'ordinal':i,'score':1,'content':str(i)} for i in range(8)]
+               'ordinal':i,'score':1,'content':str(i),'content_sha256':'a'*64,'chunk_sha256':'b'*64,
+               'metadata':{'channel_id':'a','knowledge_state':'approved'},'source_uri':'buzz://event/source'} for i in range(8)]
         with patch.object(main,'verify_stack_api_secret'), patch.object(main,'run_retrieval_query',AsyncMock(return_value=(rows,[]))), \
              patch.object(main,'generate_grounded_answer',AsyncMock(return_value='answer [1]')) as generate:
             result=await main.ask(main.AskRequest(query='q',channel_id='a',max_citations=2),None)
         self.assertEqual(len(result['citations']),2)
         self.assertEqual(len(generate.call_args.args[1]),2)
+
+    def test_citation_integrity_is_derived_from_authoritative_row(self):
+        row={'document_id':'doc','ordinal':3,'title':'Policy','source_uri':'buzz://event/x#attachment:1',
+             'content_sha256':'a'*64,'chunk_sha256':'b'*64,'metadata':{'channel_id':'chan','knowledge_state':'approved'},'score':0.9}
+        citation=main.authoritative_citation(row)
+        self.assertEqual(citation['document_sha256'],'a'*64);self.assertEqual(citation['chunk_sha256'],'b'*64)
+        self.assertEqual(citation['channel_id'],'chan');self.assertEqual(citation['chunk_ordinal'],3)

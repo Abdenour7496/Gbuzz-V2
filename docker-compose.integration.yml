@@ -78,6 +78,7 @@ services:
       STACK_API_SECRET: integration-secret
       AUDIT_PACK_SIGNING_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       ENFORCE_STACK_API_SECRET: "true"
+      GCOR_ALLOW_UNSCOPED_LEGACY: "true"
       SCHEMAS_DIR: /app/schemas
     ports:
       - "127.0.0.1:15001:5001"

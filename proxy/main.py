@@ -1123,7 +1123,8 @@ if os.getenv("GCOR_ACCESS_MODE", "legacy") == "buzz":
     nostr_validator = BuzzIdentity(app, os.environ["GCOR_PUBLIC_ORIGIN"])
 app.add_middleware(ScopedAccess, mode=os.getenv("GCOR_ACCESS_MODE", "legacy"),
                    credentials=os.getenv("GCOR_SCOPED_CREDENTIALS", "[]"),
-                   workloads=os.getenv("GCOR_WORKLOAD_CREDENTIALS", "[]"), nostr=nostr_validator)
+                   workloads=os.getenv("GCOR_WORKLOAD_CREDENTIALS", "[]"), nostr=nostr_validator,
+                   allow_legacy_unscoped=os.getenv('GCOR_ALLOW_UNSCOPED_LEGACY','false').lower()=='true')
 app.add_middleware(
     RequestLimits, max_body_bytes=MAX_REQUEST_BODY_BYTES,
     max_in_flight=MAX_API_IN_FLIGHT, body_timeout=REQUEST_BODY_TIMEOUT_SECONDS,
@@ -1152,7 +1153,7 @@ def verify_webhook(secret: str | None) -> None:
 
 def verify_stack_api_secret(secret: str | None) -> None:
     principal=current_principal.get()
-    if principal is not None:
+    if principal is not None and (not principal.workload or principal.operations):
         return
     if REQUIRE_WORKLOAD_IDENTITY:
         raise HTTPException(401, "A channel-scoped workload identity is required")
@@ -1508,7 +1509,7 @@ async def run_retrieval_query(
     prefer_recent_approved: bool = False,
 ) -> tuple[list[Any], list[Any]]:
     principal = current_principal.get()
-    if principal is not None:
+    if principal is not None and not (principal.workload and not principal.operations):
         if channel_id is not None and channel_id != principal.channel_id:
             raise HTTPException(403, "Channel is outside the authenticated scope")
         if agent_id is not None and agent_id != principal.agent_id:
@@ -1537,7 +1538,7 @@ async def run_retrieval_query(
             WITH search_terms AS (
                 SELECT websearch_to_tsquery('english', $7) AS query
             ), semantic_candidates AS (
-                SELECT c.id, c.node_id, c.document_id, c.ordinal, c.content, c.embedding, d.title, d.source_uri, d.created_at, d.metadata, c.search_vector
+                SELECT c.id, c.node_id, c.document_id, c.ordinal, c.content, c.embedding, d.title, d.source_uri, d.created_at, d.metadata, d.content_sha256, c.search_vector
                 FROM gcor.chunks c
                 JOIN gcor.documents d ON d.id = c.document_id
                 JOIN gcor.nodes n ON n.id = c.node_id
@@ -1554,7 +1555,7 @@ async def run_retrieval_query(
                 ORDER BY c.embedding <=> $1::vector
                 LIMIT ($6 * 4)
             ), lexical_candidates AS (
-                SELECT c.id, c.node_id, c.document_id, c.ordinal, c.content, c.embedding, d.title, d.source_uri, d.created_at, d.metadata, c.search_vector
+                SELECT c.id, c.node_id, c.document_id, c.ordinal, c.content, c.embedding, d.title, d.source_uri, d.created_at, d.metadata, d.content_sha256, c.search_vector
                 FROM gcor.chunks c
                 JOIN gcor.documents d ON d.id = c.document_id
                 JOIN gcor.nodes n ON n.id = c.node_id
@@ -1573,7 +1574,7 @@ async def run_retrieval_query(
                 ORDER BY ts_rank_cd(c.search_vector, search_terms.query, 32) DESC
                 LIMIT ($6 * 4)
             ), graph_candidates AS (
-                SELECT c.id,c.node_id,c.document_id,c.ordinal,c.content,c.embedding,d.title,d.source_uri,d.created_at,d.metadata,c.search_vector
+                SELECT c.id,c.node_id,c.document_id,c.ordinal,c.content,c.embedding,d.title,d.source_uri,d.created_at,d.metadata,d.content_sha256,c.search_vector
                 FROM gcor.chunks c JOIN gcor.documents d ON d.id=c.document_id JOIN gcor.nodes n ON n.id=c.node_id
                 WHERE d.id=ANY($15::uuid[]) AND d.access_level=$2 AND n.access_level=$2
                   AND d.metadata->>'channel_id'=$10 AND d.metadata->>'knowledge_state'='approved'
@@ -1591,6 +1592,7 @@ async def run_retrieval_query(
                 SELECT * FROM graph_candidates
             )
                              SELECT c.id, c.node_id, c.document_id, c.ordinal, c.content, c.title, c.source_uri, c.created_at, c.metadata,
+                   c.content_sha256, encode(digest(c.content,'sha256'),'hex') AS chunk_sha256,
                    COALESCE(1 - (c.embedding <=> $1::vector), 0.0) AS vector_score,
                    ts_rank_cd(c.search_vector, search_terms.query, 32) AS lexical_score,
                                      ($8 * (COALESCE(1 - (c.embedding <=> $1::vector), 0.0)) +
@@ -1679,6 +1681,15 @@ async def run_retrieval_query(
                 channel_id, channel_name, approved_only, "proposed" if principal else "approved", principal.subject if principal else None,
             )
     return matches, graph_nodes
+
+
+def authoritative_citation(item: dict[str, Any]) -> dict[str, Any]:
+    metadata=item.get('metadata') or {}
+    if isinstance(metadata,str): metadata=json.loads(metadata)
+    return {'document_id':item['document_id'],'chunk_ordinal':item['ordinal'],'title':item['title'],
+            'source_uri':item.get('source_uri'),'document_sha256':item['content_sha256'],
+            'chunk_sha256':item['chunk_sha256'],'channel_id':metadata.get('channel_id'),
+            'lifecycle_state':metadata.get('knowledge_state','approved'),'score':item['score']}
 
 
 def format_answer_from_chunks(query: str, matches: list[dict[str, Any]]) -> str:
@@ -2082,7 +2093,7 @@ async def ask(
     started = time.perf_counter()
     REQUESTS.inc()
     principal = current_principal.get()
-    if principal is not None and not payload.channel_id:
+    if principal is not None and not (principal.workload and not principal.operations) and not payload.channel_id:
         payload.channel_id = principal.channel_id
     if not payload.channel_id and not payload.channel_name:
         raise HTTPException(422, "channel scope is required: provide channel_id or channel_name")
@@ -2104,16 +2115,7 @@ async def ask(
     )
     normalized = [dict(row) | {"id": str(row["id"]), "node_id": str(row["node_id"]), "document_id": str(row["document_id"])} for row in matches]
     evidence = normalized[:min(payload.max_citations, 6)]
-    citations = [
-        {
-            "document_id": item["document_id"],
-            "title": item["title"],
-            "source_uri": item.get("source_uri"),
-            "ordinal": item["ordinal"],
-            "score": item["score"],
-        }
-        for item in evidence
-    ]
+    citations = [authoritative_citation(item) for item in evidence]
     REQUEST_DURATION.observe(time.perf_counter() - started)
     return {
         "answer": await generate_grounded_answer(query, evidence),
@@ -2134,7 +2136,7 @@ async def ask_reply(
     started = time.perf_counter()
     REQUESTS.inc()
     principal = current_principal.get()
-    if principal is not None and not payload.channel_id:
+    if principal is not None and not (principal.workload and not principal.operations) and not payload.channel_id:
         payload.channel_id = principal.channel_id
     if not payload.channel_id and not payload.channel_name:
         raise HTTPException(422, "channel scope is required: provide channel_id or channel_name")
@@ -2156,16 +2158,7 @@ async def ask_reply(
     )
     normalized = [dict(row) | {"id": str(row["id"]), "node_id": str(row["node_id"]), "document_id": str(row["document_id"])} for row in matches]
     evidence = normalized[:min(payload.max_citations, 6)]
-    citations = [
-        {
-            "document_id": item["document_id"],
-            "title": item["title"],
-            "source_uri": item.get("source_uri"),
-            "ordinal": item["ordinal"],
-            "score": item["score"],
-        }
-        for item in evidence
-    ]
+    citations = [authoritative_citation(item) for item in evidence]
     answer = await generate_grounded_answer(query, evidence)
     reply_text = compose_chat_reply(
         query,
