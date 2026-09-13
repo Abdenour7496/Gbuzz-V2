@@ -1,4 +1,22 @@
 services:
+  gcor-relationship-migrate:
+    profiles: ["relationship-projection"]
+    image: postgres:17-alpine
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER:-buzz}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-gcor}
+    volumes:
+      - ./relationship-projector/migrations:/relationship-migrations:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["psql -v ON_ERROR_STOP=1 -f /relationship-migrations/0015_postgres_relationship_projection.sql"]
+    depends_on:
+      gcor-migrate: {condition: service_completed_successfully}
+    networks: [data-net]
+
   gcor-relationship-projector:
     profiles: ["relationship-projection"]
     build:
@@ -15,14 +33,15 @@ services:
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
-      POSTGRES_USER: ${GCOR_DB_USER:?set GCOR_DB_USER}
-      POSTGRES_PASSWORD: ${GCOR_DB_PASSWORD:?set GCOR_DB_PASSWORD}
+      POSTGRES_USER: ${GCOR_RELATIONSHIP_DB_USER:?set GCOR_RELATIONSHIP_DB_USER}
+      POSTGRES_PASSWORD: ${GCOR_RELATIONSHIP_DB_PASSWORD:?set GCOR_RELATIONSHIP_DB_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-gcor}
       OLLAMA_HOST: http://ollama:11434
       RELATIONSHIP_MODEL: ${RELATIONSHIP_MODEL:-qwen2.5:1.5b}
       RELATIONSHIP_POLL_SECONDS: ${RELATIONSHIP_POLL_SECONDS:-10}
+      RELATIONSHIP_MAX_ATTEMPTS: ${RELATIONSHIP_MAX_ATTEMPTS:-8}
     depends_on:
-      postgres: {condition: service_healthy}
+      gcor-relationship-migrate: {condition: service_completed_successfully}
       ollama: {condition: service_healthy}
     mem_limit: 256m
     cpus: 0.50

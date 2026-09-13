@@ -1,6 +1,14 @@
 -- Governed PostgreSQL-native relationship projection. Documents and chunks stay
 -- authoritative; every semantic node/edge is derived, revision-bound, and
 -- rebuildable. The worker is optional and dormant until its compose overlay is used.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gcor_relationship_projector') THEN
+        CREATE ROLE gcor_relationship_projector NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;
+    END IF;
+END
+$$;
+
 CREATE TABLE IF NOT EXISTS gcor.relationship_projection (
     document_id UUID PRIMARY KEY REFERENCES gcor.documents(id) ON DELETE CASCADE,
     source_revision CHAR(64) NOT NULL,
@@ -13,6 +21,9 @@ CREATE TABLE IF NOT EXISTS gcor.relationship_projection (
     edge_count INTEGER NOT NULL DEFAULT 0 CHECK (edge_count >= 0),
     error TEXT,
     projected_at TIMESTAMPTZ,
+    lease_owner UUID,
+    lease_expires_at TIMESTAMPTZ,
+    next_retry_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -41,25 +52,30 @@ ALTER TABLE gcor.relationship_projection ENABLE ROW LEVEL SECURITY;
 ALTER TABLE gcor.relationship_projection FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS relationship_projection_channel_scope ON gcor.relationship_projection;
 CREATE POLICY relationship_projection_channel_scope ON gcor.relationship_projection
-    FOR ALL TO gcor_app
-    USING (gcor.scope_channel() IS NULL OR channel_id = gcor.scope_channel())
-    WITH CHECK (gcor.scope_channel() IS NULL OR channel_id = gcor.scope_channel());
+    FOR ALL TO gcor_app, gcor_relationship_projector
+    USING (channel_id = gcor.scope_channel() OR gcor.scope_workload() = 'relationship-projector')
+    WITH CHECK (channel_id = gcor.scope_channel() OR gcor.scope_workload() = 'relationship-projector');
 
-ALTER TABLE gcor.edges ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS edges_channel_scope ON gcor.edges;
-CREATE POLICY edges_channel_scope ON gcor.edges
-    FOR ALL TO gcor_app
-    USING (
-        gcor.scope_channel() IS NULL
-        OR (channel_id = gcor.scope_channel()
-            AND EXISTS (SELECT 1 FROM gcor.nodes source WHERE source.id = edges.source_id)
-            AND EXISTS (SELECT 1 FROM gcor.nodes target WHERE target.id = edges.target_id))
-    )
-    WITH CHECK (
-        gcor.scope_channel() IS NULL
-        OR (channel_id = gcor.scope_channel()
-            AND EXISTS (SELECT 1 FROM gcor.nodes source WHERE source.id = edges.source_id)
-            AND EXISTS (SELECT 1 FROM gcor.nodes target WHERE target.id = edges.target_id))
-    );
+-- Add narrowly scoped worker policies. Never replace the interactive policies
+-- established by 0014_tenant_rls_fail_closed.sql.
+DROP POLICY IF EXISTS relationship_documents_select ON gcor.documents;
+CREATE POLICY relationship_documents_select ON gcor.documents FOR SELECT TO gcor_relationship_projector
+    USING (gcor.scope_workload() = 'relationship-projector');
+DROP POLICY IF EXISTS relationship_chunks_select ON gcor.chunks;
+CREATE POLICY relationship_chunks_select ON gcor.chunks FOR SELECT TO gcor_relationship_projector
+    USING (gcor.scope_workload() = 'relationship-projector');
+DROP POLICY IF EXISTS relationship_nodes_worker ON gcor.nodes;
+CREATE POLICY relationship_nodes_worker ON gcor.nodes FOR ALL TO gcor_relationship_projector
+    USING (gcor.scope_workload() = 'relationship-projector')
+    WITH CHECK (gcor.scope_workload() = 'relationship-projector' AND document_id IS NOT NULL
+                AND properties->>'channel_id' IS NOT NULL);
+DROP POLICY IF EXISTS relationship_edges_worker ON gcor.edges;
+CREATE POLICY relationship_edges_worker ON gcor.edges FOR ALL TO gcor_relationship_projector
+    USING (gcor.scope_workload() = 'relationship-projector')
+    WITH CHECK (gcor.scope_workload() = 'relationship-projector' AND channel_id IS NOT NULL
+                AND source_document_id IS NOT NULL AND source_revision IS NOT NULL);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON gcor.relationship_projection TO gcor_app;
+GRANT USAGE ON SCHEMA gcor TO gcor_relationship_projector;
+GRANT SELECT ON gcor.documents, gcor.chunks TO gcor_relationship_projector;
+GRANT SELECT, INSERT, UPDATE, DELETE ON gcor.nodes, gcor.edges, gcor.relationship_projection TO gcor_relationship_projector;
