@@ -76,6 +76,8 @@ class RelationshipProjectionTest(unittest.TestCase):
         self.assertNotIn("gcor.scope_channel() IS NULL", migration)
         self.assertIn("gcor.scope_workload() = 'relationship-projector'", migration)
         self.assertIn("properties->>'projector' = 'postgres_relationship_v1'", migration)
+        self.assertIn("pg_has_role(session_user, 'gcor_relationship_projector', 'member')", migration)
+        self.assertIn("p.channel_id IS DISTINCT FROM d.metadata->>'channel_id'", Path(main.__file__).read_text())
         self.assertNotIn("GRANT SELECT, INSERT, UPDATE, DELETE ON gcor.nodes", migration)
         self.assertIn("FOR UPDATE OF d SKIP LOCKED", Path(main.__file__).read_text())
 

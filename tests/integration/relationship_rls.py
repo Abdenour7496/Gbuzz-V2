@@ -37,6 +37,11 @@ async def main():
         await runtime.execute("RESET gcor.channel_id")
         await runtime.execute("RESET gcor.workload")
         assert await runtime.fetchval("SELECT count(*) FROM gcor.relationship_projection") == 0
+        await runtime.execute("SELECT set_config('gcor.workload','relationship-projector',false)")
+        assert await runtime.fetchval("SELECT count(*) FROM gcor.relationship_projection") == 0
+        assert await runtime.execute(
+            "UPDATE gcor.relationship_projection SET status='stale' WHERE document_id=$1", document_id,
+        ) == "UPDATE 0"
         await projector.execute("SELECT set_config('gcor.workload','relationship-projector',false)")
         assert await projector.fetchval("SELECT count(*) FROM gcor.relationship_projection WHERE document_id=$1", document_id) == 1
         assert await projector.fetchval("SELECT count(*) FROM gcor.documents WHERE id=$1", document_id) == 1
@@ -50,6 +55,16 @@ async def main():
             pass
         else:
             raise AssertionError("relationship role can delete graph rows")
+        await admin.execute(
+            "UPDATE gcor.documents SET metadata=jsonb_set(metadata,'{channel_id}','\"moved-channel\"') WHERE id=$1",
+            document_id,
+        )
+        assert await admin.fetchval(
+            """SELECT count(*) FROM gcor.relationship_projection p JOIN gcor.documents d ON d.id=p.document_id
+               WHERE p.document_id=$1 AND p.status='pending'
+                 AND p.channel_id IS DISTINCT FROM d.metadata->>'channel_id'""",
+            document_id,
+        ) == 1
         try:
             await projector.fetchval("SELECT count(*) FROM gcor.audit_pack_exports")
         except asyncpg.InsufficientPrivilegeError:

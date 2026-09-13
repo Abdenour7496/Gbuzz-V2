@@ -52,9 +52,16 @@ ALTER TABLE gcor.relationship_projection ENABLE ROW LEVEL SECURITY;
 ALTER TABLE gcor.relationship_projection FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS relationship_projection_channel_scope ON gcor.relationship_projection;
 CREATE POLICY relationship_projection_channel_scope ON gcor.relationship_projection
-    FOR ALL TO gcor_app, gcor_relationship_projector
-    USING (channel_id = gcor.scope_channel() OR gcor.scope_workload() = 'relationship-projector')
-    WITH CHECK (channel_id = gcor.scope_channel() OR gcor.scope_workload() = 'relationship-projector');
+    FOR ALL TO gcor_app
+    USING (channel_id = gcor.scope_channel())
+    WITH CHECK (channel_id = gcor.scope_channel());
+DROP POLICY IF EXISTS relationship_projection_worker ON gcor.relationship_projection;
+CREATE POLICY relationship_projection_worker ON gcor.relationship_projection
+    FOR ALL TO gcor_relationship_projector
+    USING (gcor.scope_workload() = 'relationship-projector'
+           AND pg_has_role(session_user, 'gcor_relationship_projector', 'member'))
+    WITH CHECK (gcor.scope_workload() = 'relationship-projector'
+                AND pg_has_role(session_user, 'gcor_relationship_projector', 'member'));
 
 -- Add narrowly scoped worker policies. Never replace the interactive policies
 -- established by 0014_tenant_rls_fail_closed.sql.

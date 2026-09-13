@@ -153,6 +153,7 @@ async def invalidate_stale(pool: asyncpg.Pool) -> None:
            JOIN gcor.documents d ON d.id=p.document_id
            WHERE p.status='projected' AND (
              p.source_revision<>d.content_sha256
+             OR p.channel_id IS DISTINCT FROM d.metadata->>'channel_id'
              OR d.metadata->>'knowledge_state' IS DISTINCT FROM 'approved'
              OR NOT gcor.knowledge_evidence_current(d.id))"""
     )
