@@ -18,7 +18,7 @@
   "refresh":"30s",
   "schemaVersion":41,
   "tags":["gbuzz","windows","endpoint","genie-sre"],
-  "templating":{"list":[{"name":"instance","label":"Endpoint","type":"query","datasource":{"type":"prometheus","uid":"prometheus"},"query":{"query":"label_values(up{job=\"windows\"}, instance)","refId":"PrometheusVariableQueryEditor-VariableQuery"},"refresh":1,"includeAll":true,"allValue":".*","current":{"text":"All","value":"$__all"}}]},
+  "templating":{"list":[{"name":"instance","label":"Endpoint","type":"query","query":{"query":"label_values(up{job=\"windows\"}, instance)","refId":"PrometheusVariableQueryEditor-VariableQuery"},"refresh":1,"includeAll":true,"allValue":".*","current":{"text":"All","value":"$__all"}}]},
   "time":{"from":"now-6h","to":"now"},
   "timezone":"browser",
   "title":"Windows Endpoint Health",
