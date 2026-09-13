@@ -1,0 +1,10 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY projector/requirements.lock ./requirements.lock
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
+COPY relationship-projector/main.py ./main.py
+COPY relationship-projector/test_main.py ./test_main.py
+
+USER 65532:65532
+CMD ["python", "main.py"]

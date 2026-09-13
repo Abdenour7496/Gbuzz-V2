@@ -1,0 +1,28 @@
+services:
+  gcor-relationship-projector:
+    profiles: ["relationship-projection"]
+    build:
+      context: .
+      dockerfile: relationship-projector/Dockerfile
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    networks: [buzz-net, data-net]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${GCOR_DB_USER:?set GCOR_DB_USER}
+      POSTGRES_PASSWORD: ${GCOR_DB_PASSWORD:?set GCOR_DB_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-gcor}
+      OLLAMA_HOST: http://ollama:11434
+      RELATIONSHIP_MODEL: ${RELATIONSHIP_MODEL:-qwen2.5:1.5b}
+      RELATIONSHIP_POLL_SECONDS: ${RELATIONSHIP_POLL_SECONDS:-10}
+    depends_on:
+      postgres: {condition: service_healthy}
+      ollama: {condition: service_healthy}
+    mem_limit: 256m
+    cpus: 0.50

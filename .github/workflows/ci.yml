@@ -33,6 +33,8 @@ jobs:
       # Placeholders so required variables interpolate; never real secrets.
       OPENAI_API_KEY: ci-placeholder
       BUZZ_KNOWLEDGE_PRIVATE_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      GCOR_DB_USER: gcor_ci
+      GCOR_DB_PASSWORD: ci-placeholder
     strategy:
       fail-fast: false
       matrix:
@@ -49,6 +51,8 @@ jobs:
             files: -f docker-compose.yml -f docker-compose.production.yml -f docker-compose.graph.yml -f docker-compose.graph-production.yml
           - name: production-enterprise-buzz
             files: -f docker-compose.yml -f docker-compose.production.yml -f docker-compose.enterprise.yml -f docker-compose.buzz.yml
+          - name: postgres-relationships
+            files: -f docker-compose.yml -f docker-compose.relationships.yml --profile relationship-projection
           - name: production-full
             files: -f docker-compose.yml -f docker-compose.safeguards.override.example.json -f docker-compose.observability.yml -f docker-compose.production.yml -f docker-compose.observability-production.yml -f docker-compose.enterprise.yml -f docker-compose.buzz.yml -f docker-compose.graph.yml -f docker-compose.graph-production.yml --profile observability
           - name: integration
@@ -90,6 +94,10 @@ jobs:
             requirements: graphiti-projector/requirements.lock
             test: graphiti-projector/test_main.py
             pythonpath: graphiti-projector
+          - component: relationship-projector
+            requirements: projector/requirements.lock
+            test: relationship-projector/test_main.py
+            pythonpath: relationship-projector
           - component: mcp-governance
             requirements: mcp-postgres-gcor/requirements.lock
             test: tests/test_mcp_governance.py
