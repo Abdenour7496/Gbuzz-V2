@@ -10,6 +10,7 @@ services:
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./observability/targets/windows-disabled.yml:/etc/prometheus/targets/windows.yml:ro
       - prometheus-data:/prometheus
     ports:
       - "${OBSERVABILITY_BIND_ADDR:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"

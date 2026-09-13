@@ -153,6 +153,12 @@ Alertmanager receiver before relying on notifications: copy
 `observability/alertmanager.production.yml.example`, point `ALERTMANAGER_CONFIG_FILE`
 at it, and include `docker-compose.observability-production.yml` in production.
 
+An opt-in `Windows Endpoint Health` dashboard and alert group are also
+provisioned. They remain inactive until a reviewed `windows_exporter` install is
+available and `docker-compose.endpoint-observability.yml` is included after the
+base observability overlay. See [Windows endpoint observability](docs/endpoint-observability.md)
+for collector scope, activation, validation, privacy, and rollback guidance.
+
 ## Built-in Health Monitoring And Recovery
 
 The default stack includes an independent `recovery-controller`. It polls the

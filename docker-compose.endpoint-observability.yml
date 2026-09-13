@@ -1,0 +1,8 @@
+# Opt-in Windows endpoint monitoring. Include after docker-compose.observability.yml
+# only after windows_exporter is installed and restricted to the local Docker host.
+services:
+  prometheus:
+    volumes:
+      - ./observability/targets/windows-sa-homelab.yml:/etc/prometheus/targets/windows.yml:ro
+    extra_hosts:
+      - host.docker.internal:host-gateway

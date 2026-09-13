@@ -15,6 +15,24 @@ def text(path):
 
 
 class ReliabilityAutomationTests(unittest.TestCase):
+    def test_windows_endpoint_observability_is_opt_in_and_provisioned(self):
+        prometheus = text("observability/prometheus.yml")
+        base = text("docker-compose.observability.yml")
+        endpoint = text("docker-compose.endpoint-observability.yml")
+        alerts = text("observability/alerts.yml")
+        dashboard = json.loads(text("observability/grafana/dashboards/windows-endpoint-health.json"))
+
+        self.assertIn('job_name: windows', prometheus)
+        self.assertIn('windows-disabled.yml:/etc/prometheus/targets/windows.yml:ro', base)
+        self.assertIn('windows-sa-homelab.yml:/etc/prometheus/targets/windows.yml:ro', endpoint)
+        self.assertEqual([], __import__('yaml').safe_load(text("observability/targets/windows-disabled.yml")))
+        for name in ("WindowsEndpointCollectorDown", "WindowsEndpointDiskCapacityLow", "WindowsEndpointMemoryPressure", "WindowsEndpointCpuPressure"):
+            self.assertIn(name, alerts)
+        self.assertEqual("windows-endpoint-health", dashboard["uid"])
+        self.assertGreaterEqual(len(dashboard["panels"]), 10)
+        self.assertNotIn("OR on() vector(0)", text("observability/grafana/dashboards/windows-endpoint-health.json"))
+        self.assertEqual("127.0.0.1", text(".env.example").split("OBSERVABILITY_BIND_ADDR=", 1)[1].splitlines()[0])
+
     def test_graphiti_queue_alerts_and_metrics_are_retired_without_schema_deletion(self):
         alerts = text("observability/alerts.yml")
         proxy = text("proxy/main.py")

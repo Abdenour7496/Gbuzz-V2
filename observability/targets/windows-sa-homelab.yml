@@ -1,0 +1,4 @@
+- targets:
+    - host.docker.internal:9182
+  labels:
+    endpoint: SA-HOMELAB

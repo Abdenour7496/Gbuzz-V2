@@ -132,3 +132,33 @@ groups:
           severity: critical
         annotations:
           summary: Recovery action budget is at risk of exhaustion
+  - name: windows-endpoint
+    rules:
+      - alert: WindowsEndpointCollectorDown
+        expr: up{job="windows"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Windows endpoint telemetry is unavailable for {{ $labels.endpoint }}"
+      - alert: WindowsEndpointDiskCapacityLow
+        expr: windows_logical_disk_free_bytes{job="windows",volume=~"[A-Z]:"} / windows_logical_disk_size_bytes{job="windows",volume=~"[A-Z]:"} < 0.15
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Windows volume {{ $labels.volume }} has less than 15% free capacity"
+      - alert: WindowsEndpointMemoryPressure
+        expr: 100 - 100 * windows_memory_physical_free_bytes{job="windows"} / windows_memory_physical_total_bytes{job="windows"} > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Windows endpoint memory usage exceeds 90% on {{ $labels.endpoint }}"
+      - alert: WindowsEndpointCpuPressure
+        expr: 100 - avg by (instance, endpoint) (rate(windows_cpu_time_total{job="windows",mode="idle"}[5m])) * 100 > 90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Windows endpoint CPU usage exceeds 90% on {{ $labels.endpoint }}"
