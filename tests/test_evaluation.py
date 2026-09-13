@@ -124,6 +124,10 @@ class Evaluation(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "either"):
             evaluation.validate_case({"id": "q", "query": "q", "channel_id": "channel-a"})
+        with self.assertRaisesRegex(ValueError, "bounded"):
+            evaluation.validate_case(
+                {"id": "customer secret / payroll", "query": "q", "channel_id": "channel-a", "required_document_ids": ["a"]}
+            )
 
     def test_secret_target_is_loopback_or_explicit_https_origin(self):
         self.assertEqual(evaluation.validate_target("http://127.0.0.1:5001", set()), "http://127.0.0.1:5001")

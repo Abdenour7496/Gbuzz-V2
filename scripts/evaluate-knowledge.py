@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
+SAFE_CASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SAFE_ABSTENTIONS = (
     "no matching knowledge found",
     "insufficient evidence",
@@ -37,6 +38,8 @@ def validate_case(case):
         raise ValueError(f"Case is missing required fields: {', '.join(missing)}")
     if not all(isinstance(case[key], str) and case[key].strip() for key in required):
         raise ValueError("Case id, query, and channel_id must be non-empty strings")
+    if not SAFE_CASE_ID.fullmatch(case["id"]):
+        raise ValueError("Case id must be a bounded non-sensitive identifier")
     unknown = sorted(set(case) - CASE_FIELDS)
     if unknown:
         raise ValueError(f"Case contains unknown fields: {', '.join(unknown)}")
