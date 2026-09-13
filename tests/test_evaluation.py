@@ -140,6 +140,12 @@ class Evaluation(unittest.TestCase):
             "https://staging.example",
         )
 
+    def test_all_http_redirects_are_rejected_before_secret_forwarding(self):
+        handler = evaluation.RejectRedirects()
+        request = object()
+        for code in (301, 302, 303, 307, 308):
+            self.assertIsNone(handler.redirect_request(request, None, code, "redirect", {}, "https://other.example"))
+
     def test_summary_exposes_release_metrics(self):
         rows = [
             {

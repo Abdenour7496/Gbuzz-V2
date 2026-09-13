@@ -31,6 +31,11 @@ CASE_FIELDS = {
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
+class RejectRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, new_url):
+        return None
+
+
 def validate_case(case):
     required = {"id", "query", "channel_id"}
     missing = sorted(required - set(case))
@@ -198,6 +203,7 @@ def main():
         validate_case(case)
     base_url = validate_target(args.url, set(args.allowed_origin))
     secret = os.environ["STACK_API_SECRET"]
+    opener = urllib.request.build_opener(RejectRedirects())
 
     def run(case):
         start = time.monotonic()
@@ -209,7 +215,7 @@ def main():
                 data=json.dumps(payload).encode(),
                 headers={"Content-Type": "application/json", "X-Gcor-Webhook-Secret": secret},
             )
-            with urllib.request.urlopen(request, timeout=120) as result:
+            with opener.open(request, timeout=120) as result:
                 response = json.load(result)
             row = assess(case, response)
         except Exception as error:
