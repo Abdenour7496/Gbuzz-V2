@@ -29,7 +29,31 @@ class ReliabilityAutomationTests(unittest.TestCase):
         for name in ("WindowsEndpointCollectorDown", "WindowsEndpointDiskCapacityLow", "WindowsEndpointMemoryPressure", "WindowsEndpointCpuPressure"):
             self.assertIn(name, alerts)
         self.assertEqual("windows-endpoint-health", dashboard["uid"])
-        self.assertGreaterEqual(len(dashboard["panels"]), 10)
+        self.assertEqual("Genie SRE — Host & Application Reliability", dashboard["title"])
+        self.assertGreaterEqual(len(dashboard["panels"]), 20)
+        panel_titles = {panel["title"] for panel in dashboard["panels"]}
+        self.assertTrue({
+            "Application availability",
+            "Recovery controller",
+            "Ingestion heartbeat age",
+            "Open ingestion work",
+            "Governance backlog",
+            "GCOR request rate by status",
+            "GCOR request latency p95",
+            "Recovery-managed services",
+            "All active reliability alerts",
+        }.issubset(panel_titles))
+        dashboard_json = text("observability/grafana/dashboards/windows-endpoint-health.json")
+        for metric in (
+            "gcor_http_requests_total",
+            "gcor_http_request_duration_seconds_bucket",
+            "gcor_ingestion_worker_age_seconds",
+            "gcor_governance_pending_events",
+            "gbuzz_recovery_controller_up",
+            "gbuzz_recovery_service_healthy",
+            "buzz_db_pool_active",
+        ):
+            self.assertIn(metric, dashboard_json)
         self.assertNotIn("OR on() vector(0)", text("observability/grafana/dashboards/windows-endpoint-health.json"))
         self.assertEqual("127.0.0.1", text(".env.example").split("OBSERVABILITY_BIND_ADDR=", 1)[1].splitlines()[0])
 
