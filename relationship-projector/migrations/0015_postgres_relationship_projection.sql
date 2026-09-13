@@ -65,17 +65,46 @@ DROP POLICY IF EXISTS relationship_chunks_select ON gcor.chunks;
 CREATE POLICY relationship_chunks_select ON gcor.chunks FOR SELECT TO gcor_relationship_projector
     USING (gcor.scope_workload() = 'relationship-projector');
 DROP POLICY IF EXISTS relationship_nodes_worker ON gcor.nodes;
-CREATE POLICY relationship_nodes_worker ON gcor.nodes FOR ALL TO gcor_relationship_projector
-    USING (gcor.scope_workload() = 'relationship-projector')
-    WITH CHECK (gcor.scope_workload() = 'relationship-projector' AND document_id IS NOT NULL
-                AND properties->>'channel_id' IS NOT NULL);
+DROP POLICY IF EXISTS relationship_nodes_select ON gcor.nodes;
+DROP POLICY IF EXISTS relationship_nodes_insert ON gcor.nodes;
+DROP POLICY IF EXISTS relationship_nodes_update ON gcor.nodes;
+CREATE POLICY relationship_nodes_select ON gcor.nodes FOR SELECT TO gcor_relationship_projector
+    USING (gcor.scope_workload() = 'relationship-projector'
+           AND properties->>'projector' = 'postgres_relationship_v1' AND document_id IS NOT NULL);
+CREATE POLICY relationship_nodes_insert ON gcor.nodes FOR INSERT TO gcor_relationship_projector
+    WITH CHECK (gcor.scope_workload() = 'relationship-projector'
+                AND properties->>'projector' = 'postgres_relationship_v1' AND document_id IS NOT NULL
+                AND properties->>'source_revision' IS NOT NULL AND properties->>'channel_id' IS NOT NULL);
+CREATE POLICY relationship_nodes_update ON gcor.nodes FOR UPDATE TO gcor_relationship_projector
+    USING (gcor.scope_workload() = 'relationship-projector'
+           AND properties->>'projector' = 'postgres_relationship_v1' AND document_id IS NOT NULL
+           AND properties->>'source_revision' IS NOT NULL AND properties->>'channel_id' IS NOT NULL)
+    WITH CHECK (gcor.scope_workload() = 'relationship-projector'
+                AND properties->>'projector' = 'postgres_relationship_v1' AND document_id IS NOT NULL
+                AND properties->>'source_revision' IS NOT NULL AND properties->>'channel_id' IS NOT NULL);
 DROP POLICY IF EXISTS relationship_edges_worker ON gcor.edges;
-CREATE POLICY relationship_edges_worker ON gcor.edges FOR ALL TO gcor_relationship_projector
-    USING (gcor.scope_workload() = 'relationship-projector')
-    WITH CHECK (gcor.scope_workload() = 'relationship-projector' AND channel_id IS NOT NULL
+DROP POLICY IF EXISTS relationship_edges_select ON gcor.edges;
+DROP POLICY IF EXISTS relationship_edges_insert ON gcor.edges;
+DROP POLICY IF EXISTS relationship_edges_update ON gcor.edges;
+CREATE POLICY relationship_edges_select ON gcor.edges FOR SELECT TO gcor_relationship_projector
+    USING (gcor.scope_workload() = 'relationship-projector'
+           AND properties->>'projector' = 'postgres_relationship_v1' AND channel_id IS NOT NULL
+           AND source_document_id IS NOT NULL AND source_revision IS NOT NULL);
+CREATE POLICY relationship_edges_insert ON gcor.edges FOR INSERT TO gcor_relationship_projector
+    WITH CHECK (gcor.scope_workload() = 'relationship-projector'
+                AND properties->>'projector' = 'postgres_relationship_v1' AND channel_id IS NOT NULL
+                AND source_document_id IS NOT NULL AND source_revision IS NOT NULL);
+CREATE POLICY relationship_edges_update ON gcor.edges FOR UPDATE TO gcor_relationship_projector
+    USING (gcor.scope_workload() = 'relationship-projector'
+           AND properties->>'projector' = 'postgres_relationship_v1' AND channel_id IS NOT NULL
+           AND source_document_id IS NOT NULL AND source_revision IS NOT NULL)
+    WITH CHECK (gcor.scope_workload() = 'relationship-projector'
+                AND properties->>'projector' = 'postgres_relationship_v1' AND channel_id IS NOT NULL
                 AND source_document_id IS NOT NULL AND source_revision IS NOT NULL);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON gcor.relationship_projection TO gcor_app;
 GRANT USAGE ON SCHEMA gcor TO gcor_relationship_projector;
 GRANT SELECT ON gcor.documents, gcor.chunks TO gcor_relationship_projector;
-GRANT SELECT, INSERT, UPDATE, DELETE ON gcor.nodes, gcor.edges, gcor.relationship_projection TO gcor_relationship_projector;
+REVOKE DELETE ON gcor.nodes, gcor.edges FROM gcor_relationship_projector;
+GRANT SELECT, INSERT, UPDATE ON gcor.nodes, gcor.edges TO gcor_relationship_projector;
+GRANT SELECT, INSERT, UPDATE, DELETE ON gcor.relationship_projection TO gcor_relationship_projector;

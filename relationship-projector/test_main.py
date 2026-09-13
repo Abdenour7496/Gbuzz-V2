@@ -75,6 +75,8 @@ class RelationshipProjectionTest(unittest.TestCase):
         self.assertNotIn("DROP POLICY IF EXISTS edges_channel_scope", migration)
         self.assertNotIn("gcor.scope_channel() IS NULL", migration)
         self.assertIn("gcor.scope_workload() = 'relationship-projector'", migration)
+        self.assertIn("properties->>'projector' = 'postgres_relationship_v1'", migration)
+        self.assertNotIn("GRANT SELECT, INSERT, UPDATE, DELETE ON gcor.nodes", migration)
         self.assertIn("FOR UPDATE OF d SKIP LOCKED", Path(main.__file__).read_text())
 
 
