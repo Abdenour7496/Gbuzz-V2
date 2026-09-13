@@ -4,7 +4,8 @@
 private staging deployment. It is a release gate, not a substitute for human
 review of factual support.
 
-Each case must include a unique `id`, `query`, and `channel_id`. Optional fields
+Each case must include a unique `id`, `query`, and `channel_id`, plus exactly one
+expected outcome: non-empty `required_document_ids` or `expect_no_answer: true`. Optional fields
 are `access_level`, `required_document_ids`, `forbidden_document_ids`,
 `forbidden_strings`, `min_recall`, and `expect_no_answer`.
 
@@ -24,6 +25,7 @@ Run against staging with a least-privilege evaluation credential:
 $env:STACK_API_SECRET = '<staging-only secret>'
 python scripts/evaluate-knowledge.py .\evaluation\enterprise.jsonl `
   --url https://staging.example.internal `
+  --allowed-origin https://staging.example.internal `
   --output .\evidence\enterprise-evaluation.json `
   --concurrency 8 --max-p95-seconds 8
 ```

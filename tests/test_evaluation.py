@@ -22,6 +22,16 @@ def citation(document_id="a", channel_id="channel-a", ordinal=0):
     }
 
 
+def chunk(document_id="a", channel_id="channel-a", ordinal=0):
+    return {
+        "document_id": document_id,
+        "ordinal": ordinal,
+        "content_sha256": HASH,
+        "chunk_sha256": HASH,
+        "metadata": {"channel_id": channel_id, "knowledge_state": "approved"},
+    }
+
+
 class Evaluation(unittest.TestCase):
     def test_forbidden_content_in_graph_is_caught(self):
         result = evaluation.assess(
@@ -41,7 +51,7 @@ class Evaluation(unittest.TestCase):
     def test_expected_authoritative_evidence_passes(self):
         result = evaluation.assess(
             {"id": "q", "query": "q", "channel_id": "channel-a", "required_document_ids": ["a"]},
-            {"answer": "claim [1]", "citations": [citation()], "chunks": [{"document_id": "a"}]},
+            {"answer": "claim [1]", "citations": [citation()], "chunks": [chunk()]},
         )
         self.assertTrue(result["passed"])
 
@@ -65,6 +75,31 @@ class Evaluation(unittest.TestCase):
         )
         self.assertFalse(result["references_valid"])
 
+    def test_arbitrary_answer_without_evidence_fails(self):
+        result = evaluation.assess(
+            {"id": "q", "query": "q", "channel_id": "channel-a", "required_document_ids": ["a"]},
+            {"answer": "Probably 42", "citations": [], "chunks": []},
+        )
+        self.assertFalse(result["passed"])
+
+    def test_citation_must_match_authoritative_chunk_and_required_source(self):
+        case = {"id": "q", "query": "q", "channel_id": "channel-a", "required_document_ids": ["a"]}
+        mismatched = evaluation.assess(
+            case, {"answer": "claim [1]", "citations": [citation("a")], "chunks": [chunk("b")]}
+        )
+        self.assertFalse(mismatched["citations_authoritative"])
+        self.assertEqual(mismatched["citation_recall"], 1)
+        self.assertEqual(mismatched["recall"], 0)
+
+    def test_forbidden_document_is_found_in_nested_graph_payload(self):
+        result = evaluation.assess(
+            {"id": "q", "query": "q", "channel_id": "channel-a", "expect_no_answer": True,
+             "forbidden_document_ids": ["private"]},
+            {"answer": "No matching knowledge found", "graph": {"nodes": [{"source_document_id": "private"}]}},
+        )
+        self.assertTrue(result["forbidden_content"])
+        self.assertFalse(result["passed"])
+
     def test_expected_no_answer_requires_safe_empty_abstention(self):
         case = {"id": "q", "query": "q", "channel_id": "channel-a", "expect_no_answer": True}
         safe = evaluation.assess(case, {"answer": "Insufficient evidence to answer this question."})
@@ -81,8 +116,25 @@ class Evaluation(unittest.TestCase):
             evaluation.validate_case({"id": "q", "query": "q"})
         with self.assertRaisesRegex(ValueError, "min_recall"):
             evaluation.validate_case(
-                {"id": "q", "query": "q", "channel_id": "channel-a", "min_recall": 1.1}
+                {"id": "q", "query": "q", "channel_id": "channel-a", "required_document_ids": ["a"], "min_recall": 1.1}
             )
+        with self.assertRaisesRegex(ValueError, "unknown fields"):
+            evaluation.validate_case(
+                {"id": "q", "query": "q", "channel_id": "channel-a", "required_document_id": "a"}
+            )
+        with self.assertRaisesRegex(ValueError, "either"):
+            evaluation.validate_case({"id": "q", "query": "q", "channel_id": "channel-a"})
+
+    def test_secret_target_is_loopback_or_explicit_https_origin(self):
+        self.assertEqual(evaluation.validate_target("http://127.0.0.1:5001", set()), "http://127.0.0.1:5001")
+        with self.assertRaises(ValueError):
+            evaluation.validate_target("http://evil.example", set())
+        with self.assertRaises(ValueError):
+            evaluation.validate_target("https://staging.example", set())
+        self.assertEqual(
+            evaluation.validate_target("https://staging.example", {"https://staging.example"}),
+            "https://staging.example",
+        )
 
     def test_summary_exposes_release_metrics(self):
         rows = [

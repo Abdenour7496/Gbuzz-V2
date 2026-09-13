@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import time
 import urllib.request
+from urllib.parse import urlsplit
 
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
@@ -22,6 +23,11 @@ SAFE_ABSTENTIONS = (
     "not enough evidence",
     "cannot answer from the available evidence",
 )
+CASE_FIELDS = {
+    "id", "query", "channel_id", "access_level", "required_document_ids",
+    "forbidden_document_ids", "forbidden_strings", "min_recall", "expect_no_answer",
+}
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 def validate_case(case):
@@ -31,11 +37,49 @@ def validate_case(case):
         raise ValueError(f"Case is missing required fields: {', '.join(missing)}")
     if not all(isinstance(case[key], str) and case[key].strip() for key in required):
         raise ValueError("Case id, query, and channel_id must be non-empty strings")
+    unknown = sorted(set(case) - CASE_FIELDS)
+    if unknown:
+        raise ValueError(f"Case contains unknown fields: {', '.join(unknown)}")
     for field in ("required_document_ids", "forbidden_document_ids", "forbidden_strings"):
         if field in case and not isinstance(case[field], list):
             raise ValueError(f"{field} must be a list")
+        if field in case and not all(isinstance(value, str) and value for value in case[field]):
+            raise ValueError(f"{field} values must be non-empty strings")
     if not 0 <= float(case.get("min_recall", 1.0)) <= 1:
         raise ValueError("min_recall must be between 0 and 1")
+    expects_abstention = case.get("expect_no_answer", False)
+    if not isinstance(expects_abstention, bool):
+        raise ValueError("expect_no_answer must be a boolean")
+    if expects_abstention == bool(case.get("required_document_ids")):
+        raise ValueError("Case must define either required_document_ids or expect_no_answer=true")
+
+
+def validate_target(url, allowed_origins):
+    parsed = urlsplit(url)
+    if parsed.username or parsed.password or parsed.query or parsed.fragment or not parsed.hostname:
+        raise ValueError("Evaluation URL must be a plain origin")
+    origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    if parsed.path not in ("", "/"):
+        raise ValueError("Evaluation URL must not contain a path")
+    if parsed.hostname in LOOPBACK_HOSTS:
+        if parsed.scheme != "http":
+            raise ValueError("Loopback evaluation uses the local HTTP endpoint")
+    elif parsed.scheme != "https" or origin not in allowed_origins:
+        raise ValueError("Non-loopback evaluation requires HTTPS and an exact --allowed-origin")
+    return origin
+
+
+def document_ids(value):
+    found = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {"document_id", "source_document_id"} and isinstance(item, str):
+                found.add(item)
+            found.update(document_ids(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.update(document_ids(item))
+    return found
 
 
 def authoritative_citation(citation, channel_id):
@@ -66,28 +110,43 @@ def assess(case, response):
         all(1 <= number <= len(citations) for number in refs)
         and (not citations or referenced == set(range(1, len(citations) + 1)))
     )
-    citations_authoritative = all(
-        authoritative_citation(citation, case["channel_id"]) for citation in citations
+    chunk_anchors = {
+        (chunk.get("document_id"), chunk.get("ordinal"), chunk.get("content_sha256"),
+         chunk.get("chunk_sha256"), (chunk.get("metadata") or {}).get("channel_id"),
+         (chunk.get("metadata") or {}).get("knowledge_state", "approved"))
+        for chunk in chunks if isinstance(chunk, dict) and isinstance(chunk.get("metadata") or {}, dict)
+    }
+    citations_authoritative = bool(citations) and all(
+        authoritative_citation(citation, case["channel_id"])
+        and (citation.get("document_id"), citation.get("chunk_ordinal"), citation.get("document_sha256"),
+             citation.get("chunk_sha256"), citation.get("channel_id"), citation.get("lifecycle_state")) in chunk_anchors
+        for citation in citations
     )
-    forbidden_content = bool(forbidden & (found | cited)) or any(
+    forbidden_content = bool(forbidden & document_ids(response)) or any(
         phrase.casefold() in serialized for phrase in case.get("forbidden_strings", [])
     )
     recall = len(found & required) / len(required) if required else 1.0
+    citation_recall = len(cited & required) / len(required) if required else 1.0
 
     expects_abstention = bool(case.get("expect_no_answer", False))
     answer = str(response.get("answer", "")).strip().casefold()
     abstained = not chunks and not citations and any(answer.startswith(marker) for marker in SAFE_ABSTENTIONS)
     abstention_ok = not expects_abstention or abstained
+    evidence_ok = expects_abstention or (
+        bool(chunks) and bool(citations) and recall >= case.get("min_recall", 1.0)
+        and citation_recall >= case.get("min_recall", 1.0)
+    )
     passed = (
         references_valid
-        and citations_authoritative
+        and (expects_abstention or citations_authoritative)
         and not forbidden_content
         and abstention_ok
-        and recall >= case.get("min_recall", 1.0)
+        and evidence_ok
     )
     return {
         "id": case["id"],
         "recall": recall,
+        "citation_recall": citation_recall,
         "references_valid": references_valid,
         "citations_authoritative": citations_authoritative,
         "forbidden_content": forbidden_content,
@@ -123,6 +182,7 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--concurrency", type=int, default=1, choices=range(1, 17))
     parser.add_argument("--max-p95-seconds", type=float, default=15)
+    parser.add_argument("--allowed-origin", action="append", default=[])
     args = parser.parse_args()
     cases = [
         json.loads(line)
@@ -133,6 +193,7 @@ def main():
         raise ValueError("Supply 1..10000 uniquely named cases")
     for case in cases:
         validate_case(case)
+    base_url = validate_target(args.url, set(args.allowed_origin))
     secret = os.environ["STACK_API_SECRET"]
 
     def run(case):
@@ -141,7 +202,7 @@ def main():
             payload = {key: case[key] for key in ("query", "channel_id", "access_level") if key in case}
             payload.update(top_k=10, max_citations=6)
             request = urllib.request.Request(
-                args.url.rstrip("/") + "/api/ask",
+                base_url + "/api/ask",
                 data=json.dumps(payload).encode(),
                 headers={"Content-Type": "application/json", "X-Gcor-Webhook-Secret": secret},
             )
