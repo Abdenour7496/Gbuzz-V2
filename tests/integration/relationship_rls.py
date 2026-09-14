@@ -18,12 +18,19 @@ async def main():
     runtime = await connect("gcor_runtime", "runtime-secret")
     projector = await connect("relationship_integration", "relationship-secret")
     document_id = uuid.uuid4()
+    draft_document_id = uuid.uuid4()
     authoritative_node_id = uuid.uuid4()
+    derived_node_id = uuid.uuid4()
     try:
         await admin.execute(
             """INSERT INTO gcor.documents(id,content_sha256,identity_sha256,title,object_key,access_level,metadata)
                VALUES($1,$2,$3,'relationship rls','test','private',$4::jsonb)""",
             document_id, "f" * 64, "e" * 64, '{"channel_id":"secret-channel","knowledge_state":"approved"}',
+        )
+        await admin.execute(
+            """INSERT INTO gcor.documents(id,content_sha256,identity_sha256,title,object_key,access_level,metadata)
+               VALUES($1,$2,$3,'draft secret','draft','private',$4::jsonb)""",
+            draft_document_id, "d" * 64, "c" * 64, '{"channel_id":"secret-channel","knowledge_state":"draft"}',
         )
         await admin.execute(
             """INSERT INTO gcor.relationship_projection(document_id,source_revision,channel_id,status,model)
@@ -43,8 +50,28 @@ async def main():
             "UPDATE gcor.relationship_projection SET status='stale' WHERE document_id=$1", document_id,
         ) == "UPDATE 0"
         await projector.execute("SELECT set_config('gcor.workload','relationship-projector',false)")
+        assert await projector.fetchval("SELECT pg_has_role(current_user,'gcor_relationship_projector','member')")
+        assert not await projector.fetchval("SELECT pg_has_role(current_user,'gcor_app','member')")
         assert await projector.fetchval("SELECT count(*) FROM gcor.relationship_projection WHERE document_id=$1", document_id) == 1
         assert await projector.fetchval("SELECT count(*) FROM gcor.documents WHERE id=$1", document_id) == 1
+        assert await projector.fetchval("SELECT count(*) FROM gcor.documents WHERE id=$1", draft_document_id) == 0
+        await projector.execute(
+            """INSERT INTO gcor.nodes(id,document_id,node_type,label,content,access_level,properties)
+               VALUES($1,$2,'Concept','derived','derived','private',$3::jsonb)""",
+            derived_node_id, document_id,
+            '{"projector":"postgres_relationship_v1","source_revision":"' + "f" * 64 + '","channel_id":"secret-channel"}',
+        )
+        try:
+            await projector.execute(
+                """INSERT INTO gcor.edges(source_id,target_id,relation,properties,channel_id,source_document_id,source_revision)
+                   VALUES($1,$2,'RELATES_TO',$3::jsonb,'secret-channel',$4,$5)""",
+                derived_node_id, authoritative_node_id,
+                '{"projector":"postgres_relationship_v1"}', document_id, "f" * 64,
+            )
+        except asyncpg.InsufficientPrivilegeError:
+            pass
+        else:
+            raise AssertionError("relationship role forged an edge to an authoritative endpoint")
         assert await projector.execute(
             "UPDATE gcor.nodes SET content='mutated' WHERE id=$1", authoritative_node_id,
         ) == "UPDATE 0"

@@ -1224,18 +1224,20 @@ async def ingest_payload(
 
     digest = hashlib.sha256(content).hexdigest()
     identity_digest = document_identity(digest, access_level, agent_id, channel_id, channel_name, str(metadata.get("extraction_version") or ""))
-    existing_ingest = await request.app.state.pool.fetchrow(
-        """SELECT d.id AS document_id, r.id AS record_id, count(c.id)::int AS chunks,
-                  r.bucket, r.original_key, r.markdown_key, r.record_key
-           FROM gcor.documents d
-           JOIN gcor.ingestion_records r ON r.document_id=d.id AND r.status='indexed'
-           JOIN gcor.chunks c ON c.document_id=d.id
-           WHERE d.identity_sha256=$1
-             AND NOT COALESCE((d.metadata->>'derivatives_invalidated')::boolean,false)
-           GROUP BY d.id,r.id,r.bucket,r.original_key,r.markdown_key,r.record_key,r.created_at
-           ORDER BY r.created_at DESC LIMIT 1""",
-        identity_digest,
-    )
+    existing_ingest = None
+    if not archive_only:
+        existing_ingest = await request.app.state.pool.fetchrow(
+            """SELECT d.id AS document_id, r.id AS record_id, count(c.id)::int AS chunks,
+                      r.bucket, r.original_key, r.markdown_key, r.record_key
+               FROM gcor.documents d
+               JOIN gcor.ingestion_records r ON r.document_id=d.id AND r.status='indexed'
+               JOIN gcor.chunks c ON c.document_id=d.id
+               WHERE d.identity_sha256=$1
+                 AND NOT COALESCE((d.metadata->>'derivatives_invalidated')::boolean,false)
+               GROUP BY d.id,r.id,r.bucket,r.original_key,r.markdown_key,r.record_key,r.created_at
+               ORDER BY r.created_at DESC LIMIT 1""",
+            identity_digest,
+        )
     if existing_ingest:
         return {
             "document_id": str(existing_ingest["document_id"]),

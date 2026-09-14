@@ -1,0 +1,50 @@
+# Optional isolated attachment parser. Keep dormant unless the explicit profile is enabled.
+services:
+  gcor-proxy:
+    profiles: [attachment-parsing]
+    environment:
+      PARSER_SOCKET_PATH: /run/parser/parser.sock
+    volumes:
+      - parser-socket:/run/parser
+    depends_on:
+      parser-worker:
+        condition: service_healthy
+
+  parser-socket-init:
+    profiles: [attachment-parsing]
+    image: alpine:3.22.1
+    network_mode: none
+    volumes:
+      - parser-socket:/run/parser
+    command: ["sh", "-c", "chown 10001:10001 /run/parser && chmod 770 /run/parser"]
+
+  parser-worker:
+    profiles: [attachment-parsing]
+    build:
+      context: .
+      dockerfile: parser-worker/Dockerfile
+    depends_on:
+      parser-socket-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 64
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+      - parser-socket:/run/parser
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect(os.environ.get('PARSER_SOCKET_PATH','/run/parser/parser.sock')); s.close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+
+volumes:
+  parser-socket:

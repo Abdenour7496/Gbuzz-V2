@@ -121,6 +121,7 @@ services:
     depends_on:
       parser-socket-init:
         condition: service_completed_successfully
+    restart: unless-stopped
     network_mode: none
     read_only: true
     user: "10001:10001"
@@ -133,6 +134,12 @@ services:
       - /tmp:rw,noexec,nosuid,size=64m
     volumes:
       - parser-socket:/run/parser
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect(os.environ.get('PARSER_SOCKET_PATH','/run/parser/parser.sock')); s.close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
 
   smoke:
     image: python:3.12-slim

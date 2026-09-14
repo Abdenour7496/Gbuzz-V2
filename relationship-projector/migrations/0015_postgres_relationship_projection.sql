@@ -48,6 +48,38 @@ CREATE INDEX IF NOT EXISTS edges_relationship_projection_idx
     ON gcor.edges (source_document_id, source_revision, valid_to)
     WHERE properties->>'projector' = 'postgres_relationship_v1';
 
+CREATE OR REPLACE FUNCTION gcor.relationship_edge_endpoints_valid(
+    candidate_source UUID,
+    candidate_target UUID,
+    candidate_document UUID,
+    candidate_revision TEXT
+) RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = pg_catalog, gcor
+AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM gcor.nodes source_node
+        WHERE source_node.id = candidate_source
+          AND source_node.document_id = candidate_document
+          AND source_node.properties->>'projector' = 'postgres_relationship_v1'
+          AND source_node.properties->>'source_revision' = candidate_revision
+    ) AND (
+        EXISTS (
+            SELECT 1 FROM gcor.nodes target_node
+            WHERE target_node.id = candidate_target
+              AND target_node.document_id = candidate_document
+              AND target_node.properties->>'projector' = 'postgres_relationship_v1'
+              AND target_node.properties->>'source_revision' = candidate_revision
+        ) OR EXISTS (
+            SELECT 1 FROM gcor.chunks target_chunk
+            WHERE target_chunk.node_id = candidate_target
+              AND target_chunk.document_id = candidate_document
+        )
+    )
+$$;
+REVOKE ALL ON FUNCTION gcor.relationship_edge_endpoints_valid(UUID, UUID, UUID, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION gcor.relationship_edge_endpoints_valid(UUID, UUID, UUID, TEXT) TO gcor_relationship_projector;
+
 ALTER TABLE gcor.relationship_projection ENABLE ROW LEVEL SECURITY;
 ALTER TABLE gcor.relationship_projection FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS relationship_projection_channel_scope ON gcor.relationship_projection;
@@ -67,10 +99,16 @@ CREATE POLICY relationship_projection_worker ON gcor.relationship_projection
 -- established by 0014_tenant_rls_fail_closed.sql.
 DROP POLICY IF EXISTS relationship_documents_select ON gcor.documents;
 CREATE POLICY relationship_documents_select ON gcor.documents FOR SELECT TO gcor_relationship_projector
-    USING (gcor.scope_workload() = 'relationship-projector');
+    USING (gcor.scope_workload() = 'relationship-projector'
+           AND metadata->>'knowledge_state' = 'approved');
 DROP POLICY IF EXISTS relationship_chunks_select ON gcor.chunks;
 CREATE POLICY relationship_chunks_select ON gcor.chunks FOR SELECT TO gcor_relationship_projector
-    USING (gcor.scope_workload() = 'relationship-projector');
+    USING (gcor.scope_workload() = 'relationship-projector'
+           AND EXISTS (
+               SELECT 1 FROM gcor.documents source_document
+               WHERE source_document.id = chunks.document_id
+                 AND source_document.metadata->>'knowledge_state' = 'approved'
+           ));
 DROP POLICY IF EXISTS relationship_nodes_worker ON gcor.nodes;
 DROP POLICY IF EXISTS relationship_nodes_select ON gcor.nodes;
 DROP POLICY IF EXISTS relationship_nodes_insert ON gcor.nodes;
@@ -100,14 +138,20 @@ CREATE POLICY relationship_edges_select ON gcor.edges FOR SELECT TO gcor_relatio
 CREATE POLICY relationship_edges_insert ON gcor.edges FOR INSERT TO gcor_relationship_projector
     WITH CHECK (gcor.scope_workload() = 'relationship-projector'
                 AND properties->>'projector' = 'postgres_relationship_v1' AND channel_id IS NOT NULL
-                AND source_document_id IS NOT NULL AND source_revision IS NOT NULL);
+                AND source_document_id IS NOT NULL AND source_revision IS NOT NULL
+                AND gcor.relationship_edge_endpoints_valid(
+                    source_id, target_id, source_document_id, source_revision
+                ));
 CREATE POLICY relationship_edges_update ON gcor.edges FOR UPDATE TO gcor_relationship_projector
     USING (gcor.scope_workload() = 'relationship-projector'
            AND properties->>'projector' = 'postgres_relationship_v1' AND channel_id IS NOT NULL
            AND source_document_id IS NOT NULL AND source_revision IS NOT NULL)
     WITH CHECK (gcor.scope_workload() = 'relationship-projector'
                 AND properties->>'projector' = 'postgres_relationship_v1' AND channel_id IS NOT NULL
-                AND source_document_id IS NOT NULL AND source_revision IS NOT NULL);
+                AND source_document_id IS NOT NULL AND source_revision IS NOT NULL
+                AND gcor.relationship_edge_endpoints_valid(
+                    source_id, target_id, source_document_id, source_revision
+                ));
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON gcor.relationship_projection TO gcor_app;
 GRANT USAGE ON SCHEMA gcor TO gcor_relationship_projector;

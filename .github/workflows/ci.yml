@@ -59,6 +59,8 @@ jobs:
             files: -f docker-compose.yml -f docker-compose.safeguards.override.example.json -f docker-compose.observability.yml -f docker-compose.production.yml -f docker-compose.observability-production.yml -f docker-compose.enterprise.yml -f docker-compose.buzz.yml -f docker-compose.graph.yml -f docker-compose.graph-production.yml --profile observability
           - name: integration
             files: -f docker-compose.integration.yml
+          - name: attachment-parser
+            files: -f docker-compose.yml -f docker-compose.attachments.yml --profile attachment-parsing
     steps:
       - uses: actions/checkout@v4
       - run: cp .env.example .env
@@ -66,6 +68,9 @@ jobs:
         if: matrix.name == 'local'
         shell: pwsh
         run: ./tests/test_optional_graph.ps1
+      - name: Validate Prometheus alert rules
+        if: matrix.name == 'local'
+        run: docker run --rm --entrypoint promtool -v "$PWD/observability/alerts.yml:/etc/prometheus/alerts.yml:ro" prom/prometheus:v3.5.0 check rules /etc/prometheus/alerts.yml
       - run: docker compose ${{ matrix.files }} config --quiet
 
   python-tests:

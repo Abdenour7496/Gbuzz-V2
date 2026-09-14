@@ -43,3 +43,24 @@ class ParserWorkerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'metadata'):
             WORKER.process({'contract_version':'gcor.parser.v1','source_sha256':'a'*64,
                             'source_size':WORKER.MAX_INPUT+1,'declared_media_type':'text/plain'},b'')
+
+    def test_worker_connection_timeout_is_bounded(self):
+        self.assertGreater(WORKER.CONNECTION_TIMEOUT, 0)
+        self.assertLessEqual(WORKER.CONNECTION_TIMEOUT, 60)
+
+    def test_socket_write_failure_does_not_escape_connection_handler(self):
+        class DisconnectedClient:
+            timeout = None
+            def settimeout(self, value): self.timeout = value
+            def recv(self, _): return b''
+            def sendall(self, _): raise BrokenPipeError("client left")
+        client = DisconnectedClient()
+        WORKER._handle_connection(client)
+        self.assertEqual(WORKER.CONNECTION_TIMEOUT, client.timeout)
+
+    def test_serialized_response_limit_fails_closed(self):
+        with patch.object(WORKER, 'MAX_OUTPUT', 256):
+            payload = WORKER._response_payload({'status':'complete','text':'x' * 1024})
+        result = __import__('json').loads(payload)
+        self.assertEqual('failed', result['status'])
+        self.assertIn('exceeds output limit', result['error'])

@@ -13,6 +13,7 @@ from document_parsing import extract
 CONTRACT_VERSION = "gcor.parser.v1"
 MAX_INPUT = int(os.getenv("PARSER_MAX_INPUT_BYTES", str(50 * 1024 * 1024)))
 MAX_OUTPUT = int(os.getenv("PARSER_MAX_OUTPUT_BYTES", str(10 * 1024 * 1024)))
+CONNECTION_TIMEOUT = float(os.getenv("PARSER_CONNECTION_TIMEOUT_SECONDS", "15"))
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 ANCHOR = re.compile(r"^\[([^\]\r\n]+)\]\r?\n", re.MULTILINE)
 
@@ -74,6 +75,34 @@ def _read(connection: socket.socket, length: int) -> bytes:
     return bytes(value)
 
 
+def _response_payload(result: dict) -> bytes:
+    payload = json.dumps(result, separators=(",", ":")).encode()
+    if len(payload) <= MAX_OUTPUT:
+        return payload
+    return json.dumps({
+        "contract_version": CONTRACT_VERSION,
+        "status": "failed",
+        "error": "worker response exceeds output limit",
+    }, separators=(",", ":")).encode()
+
+
+def _handle_connection(connection: socket.socket) -> None:
+    connection.settimeout(CONNECTION_TIMEOUT)
+    try:
+        header_length, content_length = struct.unpack("!IQ", _read(connection, 12))
+        if header_length > 16_384 or content_length > MAX_INPUT:
+            raise ValueError("request exceeds worker limits")
+        result = process(json.loads(_read(connection, header_length)), _read(connection, content_length))
+    except Exception as error:
+        result = {"contract_version": CONTRACT_VERSION, "status": "failed", "error": str(error)[:500]}
+    payload = _response_payload(result)
+    try:
+        connection.sendall(struct.pack("!I", len(payload)) + payload)
+    except (BrokenPipeError, ConnectionError, OSError, socket.timeout):
+        # A timed-out or disconnected client must not terminate the worker.
+        return
+
+
 def serve() -> int:
     path = os.getenv("PARSER_SOCKET_PATH", "/run/parser/parser.sock")
     try:
@@ -85,15 +114,7 @@ def serve() -> int:
     while True:
         connection, _ = server.accept()
         with connection:
-            try:
-                header_length, content_length = struct.unpack("!IQ", _read(connection, 12))
-                if header_length > 16_384 or content_length > MAX_INPUT:
-                    raise ValueError("request exceeds worker limits")
-                result = process(json.loads(_read(connection, header_length)), _read(connection, content_length))
-            except Exception as error:
-                result = {"contract_version": CONTRACT_VERSION, "status": "failed", "error": str(error)[:500]}
-            payload = json.dumps(result, separators=(",", ":")).encode()
-            connection.sendall(struct.pack("!I", len(payload)) + payload)
+            _handle_connection(connection)
 
 
 if __name__ == "__main__":
