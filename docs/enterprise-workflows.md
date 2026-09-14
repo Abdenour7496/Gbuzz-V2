@@ -25,7 +25,7 @@ Set `GCOR_PUBLIC_ORIGIN` to the exact signed origin when deploying behind TLS. K
 
 Run `pwsh -NoProfile -File scripts/restore-drill.ps1` for an isolated PostgreSQL and referenced GCOR object restore. It does not stop the live stack. It retains a database snapshot, copied objects and checksums under `backups/restore-drill-*`. Backups contain application data and require protected storage. This drill excludes unrelated relay media, graph rebuild and host loss.
 
-`scripts/evaluate-knowledge.py` accepts a JSONL corpus and `--output report.json`, with optional `--concurrency` and `--max-p95-seconds`. It uses `STACK_API_SECRET` from the environment against a private staging API. Each case includes `id`, `query`, `channel_id`, `access_level`, and optional `required_document_ids`, `forbidden_document_ids`, `forbidden_strings`, `expect_no_answer` and `min_recall`. It checks source recall, reference validity, forbidden content and latency; human reviewers must still assess whether claims are supported.
+`scripts/evaluate-knowledge.py` runs the [enterprise assurance and capacity gate](enterprise-assurance-capacity-gate.md) with staging-only NIP-98 identities. It produces digest-bound, text-free review records after re-resolving every citation and rechecking membership at release time. `scripts/review-enterprise-evaluation.py` separately verifies signed owner judgments against those exact records. Workload credentials are exercised only by `scripts/evaluate-service-identity-matrix.py`; those results cannot count as tenant-isolation evidence.
 
 ## Verification evidence
 
