@@ -183,6 +183,24 @@ class NostrTest(unittest.IsolatedAsyncioTestCase):
 
 
 class EvidenceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_release_time_revocation_denies_response(self):
+        pool=SimpleNamespace(fetchval=AsyncMock(return_value=False))
+        request=SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=pool)))
+        reset=current_principal.set(Principal('a'*64,'11111111-1111-1111-1111-111111111111','private'))
+        try:
+            with self.assertRaisesRegex(Exception,'response release'):
+                await main.verify_release_authorization(request,[])
+        finally: current_principal.reset(reset)
+
+    async def test_archived_citation_denied_at_release(self):
+        pool=SimpleNamespace(fetchval=AsyncMock(side_effect=[True,0]))
+        request=SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=pool)))
+        reset=current_principal.set(Principal('a'*64,'11111111-1111-1111-1111-111111111111','private'))
+        try:
+            with self.assertRaisesRegex(Exception,'Citation evidence changed'):
+                await main.verify_release_authorization(request,[{'document_id':'22222222-2222-2222-2222-222222222222'}])
+        finally: current_principal.reset(reset)
+
     async def test_invalid_or_missing_citations_use_excerpts(self):
         matches=[{'title':'Policy','content':'Supported statement.'}]
         for answer in ('Invented statement.', 'Invented [2]', 'Invented [0]'):

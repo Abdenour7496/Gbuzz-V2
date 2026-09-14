@@ -1,4 +1,24 @@
 groups:
+- name: gcor-parser-worker
+  rules:
+  - alert: GcorParserWorkerUnavailable
+    expr: increase(gcor_parser_requests_total{status="unavailable"}[10m]) > 0
+    for: 2m
+    labels: {severity: critical}
+    annotations:
+      summary: "Isolated parser worker is unavailable"
+  - alert: GcorParserWorkerFailures
+    expr: sum(increase(gcor_parser_requests_total{status=~"timeout|rejected"}[15m])) > 5
+    for: 5m
+    labels: {severity: warning}
+    annotations:
+      summary: "Parser worker failures exceed the bounded threshold"
+  - alert: GcorParserWorkerSaturation
+    expr: gcor_parser_in_flight > 4
+    for: 5m
+    labels: {severity: warning}
+    annotations:
+      summary: "Parser worker backlog exceeds four concurrent requests"
   - name: gbuzz
     rules:
       - alert: IngestionJobsFailed

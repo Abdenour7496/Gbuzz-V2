@@ -35,6 +35,7 @@ from access_policy import Principal, ScopedAccess, current_principal
 from db_scope import ScopedPool
 from enterprise_workflows import router as workspace_router, worker as ingestion_worker
 from document_parsing import extract as parse_document
+from parser_client import extract as parse_isolated_document
 from graph_retrieval import candidates as graph_candidates
 from audit_pack import router as audit_pack_router
 
@@ -93,6 +94,15 @@ ATTACHMENT_REPLAY_RETRIES = Counter("gcor_attachment_replay_retries_total", "Att
 ATTACHMENT_REPLAY_FAILURES = Counter("gcor_attachment_replay_failures_total", "Attachment replay failures")
 ATTACHMENT_REPLAY_TIMEOUTS = Counter("gcor_attachment_replay_timeouts_total", "Attachment replay timeouts")
 ATTACHMENT_FETCH_DURATION = Histogram("gcor_attachment_fetch_duration_seconds", "Attachment fetch duration")
+ATTACHMENT_STAGES = Counter("gcor_attachment_stage_total", "Attachment processing outcomes", ["stage"])
+ATTACHMENT_BYTES = Counter("gcor_attachment_bytes_total", "Verified attachment bytes received")
+ATTACHMENT_EXTRACTION_DURATION = Histogram("gcor_attachment_extraction_duration_seconds", "Attachment extraction duration")
+ATTACHMENT_REPROCESSING_AGE = Histogram("gcor_attachment_reprocessing_age_seconds", "Age of attachment when reprocessed")
+PARSER_IN_FLIGHT = Gauge("gcor_parser_in_flight", "Parser requests currently in flight")
+PARSER_REQUESTS = Counter("gcor_parser_requests_total", "Parser worker outcomes", ["status"])
+PARSER_DURATION = Histogram("gcor_parser_duration_seconds", "Parser worker request duration")
+PARSER_OUTPUT_BYTES = Counter("gcor_parser_output_bytes_total", "Validated parser output bytes")
+PARSER_CLEANUP_FAILURES = Counter("gcor_parser_cleanup_failures_total", "Parser cleanup failures")
 REMOTE_FETCH_BLOCKED = Counter("gcor_remote_fetch_blocked_total", "Remote URL fetch requests rejected by policy", ["reason"])
 HTTP_REQUESTS = Counter("gcor_http_requests_total", "GCOR HTTP responses", ["method", "status"])
 HTTP_REQUEST_DURATION = Histogram("gcor_http_request_duration_seconds", "GCOR HTTP request duration", ["method"])
@@ -247,6 +257,26 @@ def chunk_text(text: str) -> list[str]:
 
 
 def extract_text(content: bytes, media_type: str) -> str:
+    if os.getenv("PARSER_SOCKET_PATH"):
+        PARSER_IN_FLIGHT.inc()
+        started = time.perf_counter()
+        try:
+            result = parse_isolated_document(content, media_type)
+            PARSER_OUTPUT_BYTES.inc(len(result.encode("utf-8")))
+            PARSER_REQUESTS.labels(status="complete").inc()
+            return result
+        except TimeoutError:
+            PARSER_REQUESTS.labels(status="timeout").inc()
+            raise
+        except (ConnectionError, OSError):
+            PARSER_REQUESTS.labels(status="unavailable").inc()
+            raise
+        except Exception:
+            PARSER_REQUESTS.labels(status="rejected").inc()
+            raise
+        finally:
+            PARSER_DURATION.observe(time.perf_counter() - started)
+            PARSER_IN_FLIGHT.dec()
     return parse_document(content, media_type)
 
 
@@ -297,6 +327,7 @@ def document_identity(
     agent_id: str | None,
     channel_id: str | None,
     channel_name: str | None,
+    extraction_version: str | None = None,
 ) -> str:
     """Deduplicate only inside the same governance and channel boundary."""
     scope = "\x1f".join([
@@ -305,6 +336,7 @@ def document_identity(
         agent_id or "",
         channel_id or "",
         channel_name or "",
+        extraction_version or "",
     ])
     return hashlib.sha256(scope.encode("utf-8")).hexdigest()
 
@@ -1191,7 +1223,33 @@ async def ingest_payload(
         raise HTTPException(413, f"payload exceeds MAX_INGEST_FILE_BYTES ({MAX_INGEST_FILE_BYTES})")
 
     digest = hashlib.sha256(content).hexdigest()
-    identity_digest = document_identity(digest, access_level, agent_id, channel_id, channel_name)
+    identity_digest = document_identity(digest, access_level, agent_id, channel_id, channel_name, str(metadata.get("extraction_version") or ""))
+    existing_ingest = await request.app.state.pool.fetchrow(
+        """SELECT d.id AS document_id, r.id AS record_id, count(c.id)::int AS chunks,
+                  r.bucket, r.original_key, r.markdown_key, r.record_key
+           FROM gcor.documents d
+           JOIN gcor.ingestion_records r ON r.document_id=d.id AND r.status='indexed'
+           JOIN gcor.chunks c ON c.document_id=d.id
+           WHERE d.identity_sha256=$1
+             AND NOT COALESCE((d.metadata->>'derivatives_invalidated')::boolean,false)
+           GROUP BY d.id,r.id,r.bucket,r.original_key,r.markdown_key,r.record_key,r.created_at
+           ORDER BY r.created_at DESC LIMIT 1""",
+        identity_digest,
+    )
+    if existing_ingest:
+        return {
+            "document_id": str(existing_ingest["document_id"]),
+            "record_id": str(existing_ingest["record_id"]),
+            "deduplicated": True,
+            "idempotent_replay": True,
+            "status": "indexed",
+            "chunks": existing_ingest["chunks"],
+            "bucket": existing_ingest["bucket"],
+            "object_key": existing_ingest["original_key"],
+            "original_key": existing_ingest["original_key"],
+            "markdown_key": existing_ingest["markdown_key"],
+            "record_key": existing_ingest["record_key"],
+        }
     now = datetime.now(timezone.utc)
     parse_effective_time(event_timestamp, now)
     bucket_name = channel_bucket_name(channel_name) if channel_name else MINIO_BUCKET
@@ -1228,8 +1286,20 @@ async def ingest_payload(
         Metadata=object_metadata,
     )
 
+    is_attachment = metadata.get("record_type") in {"attachment", "buzz_attachment", "file_upload"}
+    if is_attachment:
+        for stage in ("discovered", "fetched", "verified"):
+            ATTACHMENT_STAGES.labels(stage=stage).inc()
+        ATTACHMENT_BYTES.inc(len(content))
+        if int(metadata.get("projection_attempt") or 1) > 1 and event_timestamp:
+            ATTACHMENT_REPROCESSING_AGE.observe(max(0, (now - parse_effective_time(event_timestamp, now)).total_seconds()))
     try:
-        content_text = extract_text(content, media_type)
+        if is_attachment:
+            with ATTACHMENT_EXTRACTION_DURATION.time():
+                content_text = extract_text(content, media_type)
+            ATTACHMENT_STAGES.labels(stage="extracted").inc()
+        else:
+            content_text = extract_text(content, media_type)
         chunks = chunk_text(content_text)
         if not chunks:
             raise ValueError("The supplied content contains no extractable text")
@@ -1237,6 +1307,8 @@ async def ingest_payload(
         if not archive_only and len(vectors) != len(chunks):
             raise ValueError("Embedding provider returned an unexpected number of vectors")
     except Exception as error:
+        if is_attachment:
+            ATTACHMENT_STAGES.labels(stage="failed").inc()
         error_text = str(getattr(error, "detail", error))[:2000]
         quarantine_body = (
             "# Content archived pending extraction\n\n"
@@ -1334,6 +1406,8 @@ async def ingest_payload(
     })
 
     if archive_only:
+        if is_attachment:
+            ATTACHMENT_STAGES.labels(stage="skipped").inc()
         manifest = build_record_manifest(
             record_id=record_id, document_id=None, title=title, source_uri=source_uri,
             media_type=media_type, content_sha256=digest, markdown_sha256=markdown_digest,
@@ -1413,6 +1487,8 @@ async def ingest_payload(
                     author_pubkey=author_pubkey, file_url=file_url, file_name=file_name,
                     metadata=metadata, session_record=session_record,
                 )
+                if is_attachment:
+                    ATTACHMENT_STAGES.labels(stage="indexed").inc()
                 return {
                     "document_id": str(document_id),
                     "record_id": str(record_id),
@@ -1446,6 +1522,8 @@ async def ingest_payload(
                     "INSERT INTO gcor.edges (source_id, target_id, relation) VALUES ($1, $2, 'CONTAINS')",
                     document_node_id, node_id,
                 )
+            if is_attachment:
+                ATTACHMENT_STAGES.labels(stage="indexed").inc()
             manifest = build_record_manifest(
                 record_id=record_id, document_id=document_id, title=title, source_uri=source_uri,
                 media_type=media_type, content_sha256=digest, markdown_sha256=markdown_digest,
@@ -1702,6 +1780,46 @@ def format_answer_from_chunks(query: str, matches: list[dict[str, Any]]) -> str:
             excerpt = excerpt[:257] + "..."
         lines.append(f"[{index + 1}] {excerpt}")
     return "\n".join(lines)
+
+
+def citation_from_match(item: dict[str, Any]) -> dict[str, Any]:
+    """Build integrity metadata exclusively from authorized stored records."""
+    metadata = normalize_json_dict(item.get("metadata"))
+    return {
+        "document_id": item["document_id"], "title": item["title"],
+        "source_uri": item.get("source_uri"), "ordinal": item["ordinal"],
+        "document_sha256": item.get("content_sha256"),
+        "chunk_sha256": hashlib.sha256(item["content"].encode("utf-8")).hexdigest(),
+        "channel_id": metadata.get("channel_id"),
+        "lifecycle_state": metadata.get("knowledge_state", "approved"),
+        "source_anchor": item["content"].split("\n", 1)[0] if item["content"].startswith("[") else None,
+        "score": item["score"],
+    }
+
+
+async def verify_release_authorization(request: Request, citations: list[dict[str, Any]]) -> None:
+    principal = current_principal.get()
+    if principal is None or not re.fullmatch(r"[0-9a-f]{64}", principal.subject or ""):
+        return
+    active = await request.app.state.pool.fetchval(
+        """SELECT EXISTS(SELECT 1 FROM public.channels c
+             JOIN public.channel_members m ON m.channel_id=c.id AND m.community_id=c.community_id
+             JOIN public.users u ON u.community_id=c.community_id AND u.pubkey=m.pubkey
+             WHERE c.id=$1::uuid AND m.pubkey=$2 AND m.removed_at IS NULL
+               AND u.deactivated_at IS NULL AND c.deleted_at IS NULL AND c.archived_at IS NULL)""",
+        principal.channel_id, bytes.fromhex(principal.subject), timeout=5)
+    if not active:
+        raise HTTPException(403, "Active Buzz channel membership required at response release")
+    if citations:
+        ids = list({UUID(item["document_id"]) for item in citations})
+        count = await request.app.state.pool.fetchval(
+            """SELECT count(*) FROM gcor.documents d WHERE d.id=ANY($1::uuid[])
+               AND d.metadata->>'channel_id'=$2 AND d.access_level=$3
+               AND d.metadata->>'knowledge_state'='approved'
+               AND gcor.knowledge_evidence_current(d.id)""",
+            ids, principal.channel_id, principal.access_level, timeout=5)
+        if count != len(ids):
+            raise HTTPException(409, "Citation evidence changed before response release")
 
 
 async def generate_grounded_answer(query: str, matches: list[dict[str, Any]]) -> str:
@@ -2116,9 +2234,11 @@ async def ask(
     normalized = [dict(row) | {"id": str(row["id"]), "node_id": str(row["node_id"]), "document_id": str(row["document_id"])} for row in matches]
     evidence = normalized[:min(payload.max_citations, 6)]
     citations = [authoritative_citation(item) for item in evidence]
+    answer = await generate_grounded_answer(query, evidence)
+    await verify_release_authorization(request, citations)
     REQUEST_DURATION.observe(time.perf_counter() - started)
     return {
-        "answer": await generate_grounded_answer(query, evidence),
+        "answer": answer,
         "citations": citations,
         "chunks": normalized,
         "graph_nodes": [dict(row) | {"id": str(row["id"])} for row in graph_nodes],
@@ -2160,6 +2280,7 @@ async def ask_reply(
     evidence = normalized[:min(payload.max_citations, 6)]
     citations = [authoritative_citation(item) for item in evidence]
     answer = await generate_grounded_answer(query, evidence)
+    await verify_release_authorization(request, citations)
     reply_text = compose_chat_reply(
         query,
         citations,
