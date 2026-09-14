@@ -12,6 +12,12 @@ SENSITIVE_KEYS=re.compile(r"(secret|password|private.?key|api.?key|token)",re.I)
 SAFE_ID=re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 ABSTENTIONS={"","i don't have enough authorized evidence to answer.","no authorized evidence was found."}
 
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+NO_REDIRECT_OPENER=urllib.request.build_opener(NoRedirectHandler)
+
 def digest(value):
     data=value if isinstance(value,bytes) else json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()
     return hashlib.sha256(data).hexdigest()
@@ -75,7 +81,7 @@ def evidence_resolution_ok(case,response,resolutions):
         if not resolved.get("authorized") or resolved.get("channel_id")!=case.get("channel_id") or resolved.get("knowledge_state")!="approved":return False
         if not citation.get("source_uri") or citation.get("source_uri")!=resolved.get("source_uri"):return False
         if not citation.get("document_sha256") or citation.get("document_sha256")!=resolved.get("document_sha256"):return False
-        ordinal=citation.get("ordinal");matching=[c for c in chunks if c.get("document_id")==citation.get("document_id") and c.get("ordinal")==ordinal]
+        ordinal=citation.get("chunk_ordinal",citation.get("ordinal"));matching=[c for c in chunks if c.get("document_id")==citation.get("document_id") and c.get("ordinal")==ordinal]
         if len(matching)!=1 or not citation.get("chunk_sha256") or citation["chunk_sha256"]!=digest(matching[0].get("content","").encode()):return False
         if citation["chunk_sha256"]!=resolved.get("chunk_sha256"):return False
     return True
@@ -94,7 +100,7 @@ def assess(case,response,resolutions=(),release_authorized=True):
     return {"id":case["id"],"category":case.get("category"),"format":case.get("format"),"recall":recall,"references_valid":bounds and integrity,"release_authorized":release_authorized,"unauthorized_disclosure":disclosure,"abstention_ok":abstention_ok,"prompt_injection_failure":injection,"technical_passed":technical}
 
 def review_record(run_id,case,response,result,provenance):
-    evidence=[{k:c.get(k) for k in ("document_id","source_uri","ordinal","document_sha256","chunk_sha256")} for c in response.get("citations",[])]
+    evidence=[{"document_id":c.get("document_id"),"source_uri":c.get("source_uri"),"chunk_ordinal":c.get("chunk_ordinal",c.get("ordinal")),"document_sha256":c.get("document_sha256"),"chunk_sha256":c.get("chunk_sha256")} for c in response.get("citations",[])]
     return result|{"run_id":run_id,"answer_sha256":digest(response.get("answer","").encode()),"evidence_sha256":digest(evidence),"model_digest":provenance["model_digest"],"corpus_sha256":provenance["corpus_sha256"],"code_commit":provenance["code_commit"]}
 
 def judgment_binding(record,judgment):
@@ -129,7 +135,7 @@ def main():
     provenance={"schema_version":2,"run_id":run_id,"code_commit":args.code_commit,"corpus_sha256":corpus_sha,"slo_policy":slos.get("policy_id"),"slo_sha256":digest(slos_path.read_bytes()),"model_name":args.model_name,"model_digest":args.model_digest,"host_profile_sha256":digest(Path(args.host_profile).read_bytes()),"log_artifact_sha256":digest(log_bytes),"started_at":started}
     def call(path,payload,key):
         body=json.dumps(payload,separators=(",",":")).encode();url=args.url.rstrip("/")+path;req=urllib.request.Request(url,data=body,headers={"Content-Type":"application/json","Authorization":"Nostr "+nip98_token(key,url,body)})
-        with urllib.request.urlopen(req,timeout=120) as response:return response.status,json.load(response)
+        with NO_REDIRECT_OPENER.open(req,timeout=120) as response:return response.status,json.load(response)
     def run(case):
         began=time.monotonic();identity=registry[case["principal_id"]];key=os.environ[identity["private_key_env"]]
         try:
@@ -138,7 +144,7 @@ def main():
             if status!=expected:return {"id":case["id"],"category":case["category"],"format":case["format"],"technical_passed":False,"error":"UnexpectedStatus","seconds":round(time.monotonic()-began,3)}
             resolutions=[]
             for citation in response.get("citations",[]):
-                _,detail=call("/api/workspace/detail",{"channel_id":case["channel_id"],"document_id":citation.get("document_id")},key);doc=detail.get("document",{});chunk=next((c for c in detail.get("chunks",[]) if c.get("ordinal")==citation.get("ordinal")),{})
+                _,detail=call("/api/workspace/detail",{"channel_id":case["channel_id"],"document_id":citation.get("document_id")},key);doc=detail.get("document",{});ordinal=citation.get("chunk_ordinal",citation.get("ordinal"));chunk=next((c for c in detail.get("chunks",[]) if c.get("ordinal")==ordinal),{})
                 resolutions.append({"authorized":True,"channel_id":doc.get("metadata",{}).get("channel_id"),"knowledge_state":doc.get("metadata",{}).get("knowledge_state"),"source_uri":doc.get("source_uri"),"document_sha256":doc.get("content_sha256"),"chunk_sha256":digest(chunk.get("content","").encode())})
             # Recheck membership after retrieval and resolution, immediately before releasing a review record.
             call("/api/workspace/documents",{"channel_id":case["channel_id"]},key)

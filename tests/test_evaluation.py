@@ -9,7 +9,7 @@ SLOS=json.loads(evaluation.DEFAULT_SLOS_PATH.read_text())
 
 def evidence():
     content="supported evidence";chunk=evaluation.digest(content.encode())
-    response={"answer":"claim [1]","citations":[{"document_id":"a","source_uri":"buzz://a","ordinal":1,"document_sha256":"d"*64,"chunk_sha256":chunk}],"chunks":[{"document_id":"a","ordinal":1,"content":content}]}
+    response={"answer":"claim [1]","citations":[{"document_id":"a","source_uri":"buzz://a","chunk_ordinal":1,"document_sha256":"d"*64,"chunk_sha256":chunk}],"chunks":[{"document_id":"a","ordinal":1,"content":content}]}
     resolution={"authorized":True,"channel_id":"chan","knowledge_state":"approved","source_uri":"buzz://a","document_sha256":"d"*64,"chunk_sha256":chunk}
     return response,[resolution]
 
@@ -23,6 +23,9 @@ class Evaluation(unittest.TestCase):
         self.assertFalse(evaluation.assess({"id":"q","category":"citation","channel_id":"chan"},response,[])["technical_passed"])
         resolutions[0]["chunk_sha256"]="0"*64
         self.assertFalse(evaluation.assess({"id":"q","category":"citation","channel_id":"chan"},response,resolutions)["technical_passed"])
+
+    def test_redirects_are_rejected_before_authorization_can_be_forwarded(self):
+        self.assertIsNone(evaluation.NoRedirectHandler().redirect_request(None,None,302,"Found",{},"http://other.invalid"))
 
     def test_archived_revoked_and_cross_channel_evidence_fail(self):
         response,resolutions=evidence()
