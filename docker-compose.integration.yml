@@ -43,6 +43,21 @@ services:
     command: ["/bin/sh", "-ec", "psql -v ON_ERROR_STOP=1 -c \"CREATE SCHEMA IF NOT EXISTS gcor; CREATE TABLE IF NOT EXISTS gcor.schema_migrations (filename text PRIMARY KEY, sha256 text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())\"; for migration in /migrations/*.sql; do name=$$(basename \"$${migration}\"); sum=$$(sha256sum \"$${migration}\" | cut -d\" \" -f1); applied=$$(psql -tA -v ON_ERROR_STOP=1 -c \"SELECT sha256 FROM gcor.schema_migrations WHERE filename='$${name}'\"); if [ \"$${applied}\" = \"$${sum}\" ]; then echo \"skip $${name}\"; continue; fi; echo \"apply $${name}\"; sed \"s/__EMBEDDING_DIMS__/$${EMBEDDING_DIMS}/g\" \"$${migration}\" | psql -v ON_ERROR_STOP=1; psql -v ON_ERROR_STOP=1 -c \"INSERT INTO gcor.schema_migrations (filename, sha256) VALUES ('$${name}', '$${sum}') ON CONFLICT (filename) DO UPDATE SET sha256=EXCLUDED.sha256, applied_at=now()\"; done; psql -v ON_ERROR_STOP=1 -v user=gcor_runtime -v pw=runtime-secret -f /migrations/runtime-role.psql"]
     networks: [integration]
 
+  relationship-migrate:
+    profiles: ["relationship-projection"]
+    image: pgvector/pgvector:pg17
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    environment:
+      PGHOST: postgres
+      PGUSER: integration
+      PGPASSWORD: integration
+      PGDATABASE: integration
+    volumes:
+      - ./relationship-projector/migrations:/relationship-migrations:ro
+    command: ["/bin/sh", "-ec", "psql -v ON_ERROR_STOP=1 -f /relationship-migrations/0015_postgres_relationship_projection.sql; psql -v ON_ERROR_STOP=1 -c \"CREATE ROLE relationship_integration LOGIN PASSWORD 'relationship-secret'; GRANT gcor_relationship_projector TO relationship_integration\""]
+    networks: [integration]
+
   mock-ollama:
     build:
       context: .
