@@ -64,6 +64,15 @@ services:
     restart: unless-stopped
     environment:
       ALERT_AUDIT_PATH: /data/alerts.jsonl
+      ALERT_STATE_PATH: /data/delivery-state.json
+      ALERT_BUZZ_RELAY_URL: ws://relay:3000
+      ALERT_BUZZ_CHANNEL_ID: ${ALERT_BUZZ_CHANNEL_ID:?set ALERT_BUZZ_CHANNEL_ID}
+      ALERT_BUZZ_THREAD_ROOT: ${ALERT_BUZZ_THREAD_ROOT:?set ALERT_BUZZ_THREAD_ROOT}
+      ALERT_BUZZ_PRIVATE_KEY_FILE: /run/secrets/alert_buzz_private_key
+      ALERT_BUZZ_MENTION_NAME: "@Genie SRE"
+      ALERT_BUZZ_MENTION_PUBKEY: ${ALERT_BUZZ_MENTION_PUBKEY:?set ALERT_BUZZ_MENTION_PUBKEY}
+    secrets:
+      - alert_buzz_private_key
     volumes:
       - alert-audit-data:/data
     healthcheck:
@@ -124,3 +133,7 @@ volumes:
   prometheus-data:
   grafana-data:
   alert-audit-data:
+
+secrets:
+  alert_buzz_private_key:
+    file: ${ALERT_BUZZ_PRIVATE_KEY_HOST_FILE:?set ALERT_BUZZ_PRIVATE_KEY_HOST_FILE}
