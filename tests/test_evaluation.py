@@ -29,7 +29,7 @@ class Evaluation(unittest.TestCase):
         self.assertFalse(quality.assess(report,[review],{'owner'})['passed'])
     def test_forbidden_content_in_graph_is_caught(self):
         result=evaluation.assess({'id':'q','forbidden_strings':['private fact']},{'answer':'No evidence','graph_nodes':[{'content':'PRIVATE FACT'}]})
-        self.assertFalse(result['passed'])
+        self.assertFalse(result['technical_passed'])
 
     def test_unresolved_or_mismatched_citation_fails(self):
         response,resolutions=evidence()
