@@ -17,7 +17,7 @@ class GovernanceFaultTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.pool = await asyncpg.create_pool(host=main.POSTGRES_HOST, port=main.POSTGRES_PORT, user=main.POSTGRES_USER,
                                              password=main.POSTGRES_PASSWORD, database=main.POSTGRES_DB,
-                                             min_size=1, max_size=5)
+                                             min_size=1, max_size=5, server_settings={'gcor.workload':'ingestion-worker'})
         self.admin = await admin_pool()
         self.s3 = main.minio_client()
         self.doc = uuid4()

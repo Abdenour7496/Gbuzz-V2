@@ -15,11 +15,12 @@ os.environ['GCOR_ACCESS_MODE'] = 'scoped'
 os.environ['GCOR_SCOPED_CREDENTIALS'] = json.dumps([{'sha256':hashlib.sha256(TOKEN.encode()).hexdigest(),
     'subject':'reader','channel_id':CHANNEL,'access_level':'public'}])
 import main
+from tests.integration.admin_db import admin_pool
 
 
 async def run():
     async with main.lifespan(main.app):
-        pool = main.app.state.pool
+        pool = await admin_pool()  # Fixture writes; API requests retain the restricted pool
         # Independent documents isolate authorization from coincidental ranking.
         nodes=[];documents=[]
         for channel, state in [(CHANNEL,'approved'),('boundary-b','approved'),(CHANNEL,'proposed'),(CHANNEL,None),(CHANNEL,'restricted')]:

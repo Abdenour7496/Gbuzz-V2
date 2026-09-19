@@ -19,6 +19,7 @@ async def run():
     async with main.lifespan(main.app):
         p=main.app.state.pool;owner=PrivateKey();member=PrivateKey();bot=PrivateKey();channel=uuid4()
         admin=await admin_pool()
+        p=admin  # Test fixture access; command processing uses main.app.state.pool
         community=await p.fetchval("SELECT id FROM public.communities WHERE host='chat-relay:3000'")
         assert community
         for key,agent in [(owner,None),(member,None),(bot,'gcor-knowledge')]:

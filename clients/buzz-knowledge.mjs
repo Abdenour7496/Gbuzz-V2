@@ -14,7 +14,7 @@ export async function signedBuzzRequest({ origin = "http://127.0.0.1:5011", path
   const payload = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
     byte => byte.toString(16).padStart(2, "0")).join("");
   const event = await signEvent({ kind: 27235, created_at: Math.floor(Date.now() / 1000),
-    content: "", tags: [["u", url], ["method", "POST"], ["payload", payload]] });
+    content: "", tags: [["u", url], ["method", "POST"], ["payload", payload], ["nonce", crypto.randomUUID()]] });
   const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(event))));
   const response = await fetch(url, { method: "POST", headers: {
     "Content-Type": "application/json", Authorization: `Nostr ${encoded}` }, body });

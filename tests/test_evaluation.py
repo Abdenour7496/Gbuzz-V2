@@ -18,6 +18,19 @@ class Evaluation(unittest.TestCase):
         response,resolutions=evidence();result=evaluation.assess({"id":"q","category":"citation","channel_id":"chan","required_document_ids":["a"]},response,resolutions)
         self.assertTrue(result["technical_passed"])
 
+    def test_owner_review_is_bound_to_the_exact_answer(self):
+        quality_spec=importlib.util.spec_from_file_location('quality',Path(__file__).resolve().parents[1]/'scripts'/'check-knowledge-quality.py')
+        quality=importlib.util.module_from_spec(quality_spec);quality_spec.loader.exec_module(quality)
+        report={'passed':True,'results':[{'id':'one','response_sha256':'correct'}]}
+        review={'id':'one','response_sha256':'wrong','reviewer':'owner','reviewed_at':'2026-09-14','factual_claims':2,'supported_claims':2,'acceptable':True}
+        self.assertFalse(quality.assess(report,[review],{'owner'},minimum_cases=1)['passed'])
+        review['response_sha256']='correct'
+        self.assertTrue(quality.assess(report,[review],{'owner'},minimum_cases=1)['passed'])
+        self.assertFalse(quality.assess(report,[review],{'owner'})['passed'])
+    def test_forbidden_content_in_graph_is_caught(self):
+        result=evaluation.assess({'id':'q','forbidden_strings':['private fact']},{'answer':'No evidence','graph_nodes':[{'content':'PRIVATE FACT'}]})
+        self.assertFalse(result['technical_passed'])
+
     def test_unresolved_or_mismatched_citation_fails(self):
         response,resolutions=evidence()
         self.assertFalse(evaluation.assess({"id":"q","category":"citation","channel_id":"chan"},response,[])["technical_passed"])

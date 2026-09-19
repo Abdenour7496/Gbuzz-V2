@@ -71,7 +71,7 @@ try {
 
     $graphArgs = @()
     if ($IncludeGraph) { $graphArgs = @('-f', 'docker-compose.graph.yml') }
-    & docker compose --env-file $EnvFile -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.production.yml -f docker-compose.observability-production.yml @graphArgs -f $LockFile --profile observability config --quiet
+    & docker compose --env-file $EnvFile -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.production.yml -f docker-compose.observability-production.yml -f docker-compose.enterprise.yml -f docker-compose.buzz.yml -f docker-compose.knowledge-trust.yml @graphArgs -f $LockFile --profile observability config --quiet
     if ($LASTEXITCODE -ne 0) { throw "Production Compose rendering failed." }
     $pinArgs = @()
     if ($IncludeGraph) { $pinArgs += '-IncludeGraph' }

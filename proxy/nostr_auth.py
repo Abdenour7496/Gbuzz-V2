@@ -70,14 +70,13 @@ class BuzzIdentity:
     async def still_authorized(self, principal: Principal) -> bool:
         if not principal.channel_id:
             return True
-        row = await self.app.state.pool.fetchval('''
-            SELECT 1 FROM public.channels c
-            JOIN public.channel_members m ON m.channel_id=c.id AND m.community_id=c.community_id
-            JOIN public.users u ON u.community_id=c.community_id AND u.pubkey=m.pubkey
-            WHERE c.id=$1 AND m.pubkey=$2 AND m.removed_at IS NULL
-              AND u.deactivated_at IS NULL AND c.deleted_at IS NULL AND c.archived_at IS NULL
-        ''', UUID(principal.channel_id), bytes.fromhex(principal.subject), timeout=5)
-        return bool(row)
+        from buzz_chat import principal as live_principal
+        try:
+            fresh=await live_principal(self.app.state.pool,principal.channel_id,principal.subject)
+            return (fresh.role==principal.role and fresh.agent_id==principal.agent_id
+                    and fresh.access_level==principal.access_level)
+        except PermissionError:
+            return False
 
     async def authenticate(self, token: bytes, scope, body: bytes) -> Principal:
         path=scope.get('raw_path',scope['path'].encode()).decode('ascii')
@@ -90,18 +89,7 @@ class BuzzIdentity:
         if scope['path']=='/api/workspace/channels':
             return Principal(pubkey,'','public')
         channel=UUID(payload['channel_id'])
-        # Membership is rechecked on every request; no authorization cache.
-        # Explicit membership is required even for public channels in this pilot.
-        row=await self.app.state.pool.fetchrow('''
-            SELECT c.visibility::text AS visibility,m.role::text AS role
-            FROM public.channels c
-            JOIN public.channel_members m ON m.channel_id=c.id AND m.community_id=c.community_id
-            JOIN public.users u ON u.community_id=c.community_id AND u.pubkey=m.pubkey
-            WHERE c.id=$1 AND m.pubkey=$2 AND m.removed_at IS NULL
-              AND u.deactivated_at IS NULL AND c.deleted_at IS NULL
-              AND c.archived_at IS NULL
-        ''',channel,bytes.fromhex(pubkey),timeout=5)
-        if row is None:
-            raise PermissionError("Active Buzz membership required")
-        level='public' if row['visibility']=='public' else 'private'
-        return Principal(pubkey,str(channel),level,role=row.get('role','reader'))
+        # Share the chat authority check, including verified agent classification
+        # and live human sponsorship. A role label never turns an agent into a human.
+        from buzz_chat import principal as live_principal
+        return await live_principal(self.app.state.pool,str(channel),pubkey)

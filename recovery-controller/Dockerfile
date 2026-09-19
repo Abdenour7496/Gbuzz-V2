@@ -1,4 +1,4 @@
-FROM python:3.12.11-alpine3.22
+FROM python:3.12-slim
 
 WORKDIR /app
 COPY recovery-controller/main.py /app/main.py

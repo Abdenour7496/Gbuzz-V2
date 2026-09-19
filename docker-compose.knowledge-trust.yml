@@ -1,0 +1,64 @@
+# Apply after the enterprise/Buzz feature overlays. This is a local trust baseline;
+# off-host recovery, signed releases and human alert delivery remain separate gates.
+x-knowledge-runtime: &knowledge-runtime
+  POSTGRES_USER: ${GCOR_DB_USER:?configure restricted GCOR_DB_USER}
+  POSTGRES_PASSWORD: ${GCOR_DB_PASSWORD:?configure restricted GCOR_DB_PASSWORD}
+  GCOR_REQUIRE_RUNTIME_ROLE: "true"
+  GCOR_ALLOW_UNSCOPED_LEGACY: "false"
+  REQUIRE_WORKLOAD_IDENTITY: "true"
+  EMBEDDING_BACKEND: ollama
+  OLLAMA_HOST: http://ollama:11434
+
+x-hardening: &hardening
+  user: "10001:10001"
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  read_only: true
+  tmpfs: ["/tmp:size=128m,mode=1777"]
+  init: true
+
+services:
+  gcor-proxy:
+    <<: *hardening
+    image: ${GCOR_TRUST_IMAGE:-gbuzz-knowledge-durable:20260914}
+    pull_policy: never
+    environment:
+      <<: *knowledge-runtime
+  gcor-enterprise:
+    <<: *hardening
+    image: ${GCOR_TRUST_IMAGE:-gbuzz-knowledge-durable:20260914}
+    pull_policy: never
+    environment:
+      <<: *knowledge-runtime
+  buzz-knowledge:
+    <<: *hardening
+    image: ${GCOR_TRUST_IMAGE:-gbuzz-knowledge-durable:20260914}
+    pull_policy: never
+    environment:
+      <<: *knowledge-runtime
+  gcor-event-projector:
+    <<: *hardening
+    environment:
+      POSTGRES_USER: ${GCOR_DB_USER:?configure restricted GCOR_DB_USER}
+      POSTGRES_PASSWORD: ${GCOR_DB_PASSWORD:?configure restricted GCOR_DB_PASSWORD}
+      PROJECTOR_WORKLOAD_TOKEN: ${PROJECTOR_WORKLOAD_TOKEN:?configure projector workload identity}
+  mcp-postgres-gcor:
+    ports: !reset []
+  docker-socket-proxy:
+    image: gbuzz-docker-socket-proxy:knowledge-trust
+    build:
+      context: .
+      dockerfile: recovery-controller/socket-proxy.Dockerfile
+    environment:
+      RECOVERY_STACK_ID: ${RECOVERY_STACK_ID:-gbuzz}
+    read_only: true
+    cap_drop: [ALL]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2375/_ping')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+  recovery-controller:
+    depends_on:
+      docker-socket-proxy:
+        condition: service_healthy

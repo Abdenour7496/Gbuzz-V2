@@ -112,7 +112,7 @@ services:
     networks: [buzz-net, data-net]
 
   minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: minio/mc:latest
     restart: "no"
     depends_on:
       minio:
@@ -202,7 +202,7 @@ services:
       GCOR_DB_PASSWORD: ${GCOR_DB_PASSWORD:-}
     volumes:
       - ./migrations:/migrations:ro
-    command: ["/bin/sh", "-ec", "psql -v ON_ERROR_STOP=1 -c \"CREATE SCHEMA IF NOT EXISTS gcor; CREATE TABLE IF NOT EXISTS gcor.schema_migrations (filename text PRIMARY KEY, sha256 text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())\"; for migration in /migrations/*.sql; do name=$$(basename \"$${migration}\"); sum=$$(sha256sum \"$${migration}\" | cut -d\" \" -f1); applied=$$(psql -tA -v ON_ERROR_STOP=1 -c \"SELECT sha256 FROM gcor.schema_migrations WHERE filename='$${name}'\"); if [ \"$${applied}\" = \"$${sum}\" ]; then echo \"skip $${name}\"; continue; fi; echo \"apply $${name}\"; sed \"s/__EMBEDDING_DIMS__/$${EMBEDDING_DIMS}/g\" \"$${migration}\" | psql -v ON_ERROR_STOP=1; psql -v ON_ERROR_STOP=1 -c \"INSERT INTO gcor.schema_migrations (filename, sha256) VALUES ('$${name}', '$${sum}') ON CONFLICT (filename) DO UPDATE SET sha256=EXCLUDED.sha256, applied_at=now()\"; done; if [ -n \"$${GCOR_DB_PASSWORD}\" ]; then psql -v ON_ERROR_STOP=1 -v user=\"$${GCOR_DB_USER:-gcor_runtime}\" -v pw=\"$${GCOR_DB_PASSWORD}\" -f /migrations/runtime-role.psql; echo \"runtime role $${GCOR_DB_USER:-gcor_runtime} ready\"; fi"]
+    command: ["/bin/sh", "/migrations/apply.sh"]
     networks: [data-net]
 
   gcor-proxy:
@@ -437,7 +437,7 @@ services:
     # The only holder of the Docker Engine socket. It forwards container listing,
     # inspection and restart requests and rejects everything else (exec, create,
     # images, volumes, networks, swarm, system). Reachable solely on control-net.
-    image: tecnativa/docker-socket-proxy:0.3.0
+    image: tecnativa/docker-socket-proxy:latest
     restart: unless-stopped
     environment:
       CONTAINERS: "1"

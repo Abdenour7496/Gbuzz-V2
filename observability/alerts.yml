@@ -19,6 +19,16 @@ groups:
     labels: {severity: warning}
     annotations:
       summary: "Parser worker backlog exceeds four concurrent requests"
+- name: gbuzz-knowledge-durability
+  rules:
+  - alert: KnowledgeSynthesisStalled
+    expr: gcor_synthesis_pending_jobs > 0 and gcor_synthesis_oldest_pending_seconds > 1800
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Knowledge synthesis has unfinished work older than 30 minutes"
+      description: "Inspect job status in Buzz; check local inference and worker health before retrying or cancelling."
 - name: gbuzz
   rules:
   - alert: IngestionJobsFailed

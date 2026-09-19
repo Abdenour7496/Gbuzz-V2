@@ -19,11 +19,15 @@ from access_policy import Principal, current_principal
 from governance_outbox import json_object
 import enterprise_workflows as workflow
 from buzz_cards import ChatReply, card_tags
+from buzz_synthesis import SynthesisPending
 
 HELP = """Knowledge commands (send as ordinary Buzz messages):
 !knowledge propose Title | finding or decision
-!knowledge synthesize (last 6 discussion messages, or the message you reply to)
-!knowledge synthesize EVENT_ID [EVENT_ID ...] (select up to 6 messages)
+!knowledge synthesize (latest 50 discussion messages, or the message you reply to)
+!knowledge synthesize EVENT_ID [EVENT_ID ...] (up to 200 messages)
+!knowledge synthesize session START_EVENT_ID END_EVENT_ID
+!knowledge status COMMAND_EVENT_ID
+!knowledge cancel COMMAND_EVENT_ID
 !knowledge list
 !knowledge index (browse topics)
 !knowledge topic Title | reusable explanation or procedure
@@ -33,7 +37,7 @@ HELP = """Knowledge commands (send as ordinary Buzz messages):
 !knowledge history DOCUMENT_ID
 !knowledge lint (check knowledge maintenance)
 !knowledge save ANSWER_EVENT_ID (propose a cited answer as knowledge)
-!knowledge show DOCUMENT_ID
+!knowledge show DOCUMENT_ID [PAGE]
 !knowledge approve DOCUMENT_ID REVISION
 !knowledge reject DOCUMENT_ID REVISION
 !knowledge archive DOCUMENT_ID REVISION
@@ -70,9 +74,9 @@ async def principal(pool, channel, author):
         WHERE c.id=$1 AND m.pubkey=$2 AND m.removed_at IS NULL AND u.deactivated_at IS NULL
         AND c.deleted_at IS NULL AND c.archived_at IS NULL''',UUID(str(channel)),bytes.fromhex(author))
     if not row: raise PermissionError('Active membership required')
-    agent=bool(row['agent_type']) or row['role']=='bot'
+    agent=bool(row.get('agent_type')) or row['role']=='bot'
     if agent:
-        sponsor=row['agent_owner_pubkey']
+        sponsor=row.get('agent_owner_pubkey')
         if not sponsor or not await pool.fetchval('''SELECT 1 FROM public.channel_members m JOIN public.users u
             ON u.community_id=m.community_id AND u.pubkey=m.pubkey WHERE m.channel_id=$1 AND m.pubkey=$2
             AND m.removed_at IS NULL AND u.deactivated_at IS NULL AND u.agent_type IS NULL
@@ -82,9 +86,9 @@ async def principal(pool, channel, author):
                      agent_id=author if agent else None,role=row['role'])
 
 
-async def source_events(pool, channel, ids):
-    if not 1<=len(ids)<=6 or len(set(ids))!=len(ids) or any(not re.fullmatch('[0-9a-f]{64}',i) for i in ids):
-        raise HTTPException(422,'Supply 1 to 6 distinct message event IDs')
+async def source_events(pool, channel, ids, *, max_events=6):
+    if not 1<=len(ids)<=max_events or len(set(ids))!=len(ids) or any(not re.fullmatch('[0-9a-f]{64}',i) for i in ids):
+        raise HTTPException(422,f'Supply 1 to {max_events} distinct message event IDs')
     rows=await pool.fetch('''SELECT encode(id,'hex') AS event_id,encode(pubkey,'hex') AS author,kind,tags,content,
         created_at,channel_id,encode(sig,'hex') AS signature FROM public.events
         WHERE channel_id=$1 AND encode(id,'hex')=ANY($2::text[]) AND deleted_at IS NULL AND kind IN (9,40002)''',UUID(channel),ids)
@@ -126,6 +130,9 @@ async def execute(app,row):
     token=current_principal.set(p);request=SimpleNamespace(app=app)
     try:
         if action=='help': return ChatReply(HELP,kind='help',title='Knowledge workspace')
+        if action in {'status','cancel'}:
+            from buzz_synthesis import control
+            return await control(app.state.pool,p,action,args)
         if action in {'topic','revise','save','index','related','history','changes','lint'}:
             from buzz_wiki import handle
             return await handle(action,args,app,request,p,event,row)
@@ -149,7 +156,7 @@ async def execute(app,row):
             return '\n'.join(f'{r["id"]} | {r["state"]} | {r["title"]}' for r in rows[:25]) or 'No channel knowledge yet. Use !knowledge propose or synthesize.'
         if action in {'propose','synthesize'}:
             if p.role not in {'owner','admin','member','bot'}:raise HTTPException(403,'Contributor required')
-            evidence=[]
+            evidence=[];provenance={}
             if action=='propose':
                 title,sep,content=args.partition('|')
                 if not sep or not title.strip() or not content.strip():raise HTTPException(422,'Use propose Title | finding')
@@ -157,24 +164,9 @@ async def execute(app,row):
                 ids=list(dict.fromkeys(t[1] for t in event['tags'] if len(t)>1 and t[0]=='e'))
                 evidence=await source_events(app.state.pool,p.channel_id,ids) if ids else []
             else:
-                cached=await app.state.pool.fetchval('SELECT draft FROM gcor.buzz_knowledge_commands WHERE event_id=$1',event['id'])
-                cached=json_object(cached) if cached else None
-                ids=cached['ids'] if cached else (args.split() or list(dict.fromkeys(t[1] for t in event['tags'] if len(t)>1 and t[0]=='e')))
-                if not ids:
-                    recent=await app.state.pool.fetch('''SELECT encode(id,'hex') AS id FROM public.events
-                        WHERE channel_id=$1 AND deleted_at IS NULL AND kind IN (9,40002)
-                        AND created_at<=$2 AND btrim(content, E' \\t\\r\\n`') NOT LIKE '!knowledge%'
-                        AND NOT(tags @> '[ ["gcor","knowledge-reply"] ]'::jsonb)
-                        ORDER BY created_at DESC,id DESC LIMIT 6''',UUID(p.channel_id),row['created_at'])
-                    ids=[r['id'] for r in reversed(recent)]
-                evidence=await source_events(app.state.pool,p.channel_id,ids)
+                from buzz_synthesis import synthesize
+                evidence,content,provenance=await synthesize(app,p,event,row,args)
                 title='Discussion findings '+event['id'][:8]
-                chunks=[{'title':r['event_id'],'content':r['content'],'source_uri':'buzz://event/'+r['event_id']} for r in evidence]
-                if cached:
-                    content=cached['content']
-                else:
-                    content=await main.generate_grounded_answer('Draft reusable findings and decisions from this discussion. Identify uncertainty and disagreement. This is a proposal for human review.',chunks)
-                    await app.state.pool.execute('UPDATE gcor.buzz_knowledge_commands SET draft=$2::jsonb WHERE event_id=$1',event['id'],json.dumps({'content':content,'ids':ids}))
             refs=[r['event_id'] for r in evidence]
             content=content.strip()+'\n\nSupporting Buzz events:\n'+'\n'.join('buzz://event/'+i for i in refs+[event['id']])
             await principal(app.state.pool,p.channel_id,p.subject)
@@ -184,22 +176,35 @@ async def execute(app,row):
                 author_pubkey=p.subject,file_url=None,file_name='discussion.txt',preserve_existing=True,
                 metadata={'knowledge_state':'proposed','knowledge_owner':p.subject,'buzz_command_id':event['id'],
                           'buzz_evidence_ids':refs+[event['id']],'knowledge_origin':'agent_synthesis' if action=='synthesize' else 'chat_proposal',
-                          'synthesis_model':main.GENERATION_MODEL if action=='synthesize' else None,'contributor_is_agent':bool(p.agent_id)})
+                          'contributor_is_agent':bool(p.agent_id),**provenance})
             if result.get('quarantined'):raise HTTPException(422,'Proposal quarantined; inspect ingestion diagnostics')
+            if action=='synthesize':
+                await app.state.pool.execute("UPDATE gcor.buzz_synthesis_jobs SET status='published',updated_at=now() WHERE event_id=$1",event['id'])
             revision=await app.state.pool.fetchval('SELECT updated_at FROM gcor.documents WHERE id=$1',UUID(str(result['document_id'])))
             return ChatReply(f'Proposal saved: {result["document_id"]}. Human review required.\n'+content[:4500]+f'\nInspect: !knowledge show {result["document_id"]}\nApprove: !knowledge approve {result["document_id"]} {revision.isoformat()}',
                 kind='proposal',title=title.strip(),document_id=result['document_id'],revision=revision.isoformat(),state='proposed',sources=refs)
         if action=='show':
-            doc=await chat_document(app.state.pool,args.strip(),p)
-            chunks=await app.state.pool.fetch('SELECT content FROM gcor.chunks WHERE document_id=$1 ORDER BY ordinal LIMIT 6',doc['id'])
+            fields=args.split()
+            if not 1<=len(fields)<=2:raise HTTPException(422,'Use show DOCUMENT_ID [PAGE]')
+            page=int(fields[1]) if len(fields)==2 else 1
+            if page<1:raise HTTPException(422,'Page must be positive')
+            doc=await chat_document(app.state.pool,fields[0],p)
+            count=await app.state.pool.fetchval('SELECT count(*) FROM gcor.chunks WHERE document_id=$1',doc['id'])
+            pages=max(1,(count+2)//3)
+            if page>pages:raise HTTPException(422,'Page is beyond the document')
+            chunks=await app.state.pool.fetch('SELECT content FROM gcor.chunks WHERE document_id=$1 ORDER BY ordinal LIMIT 3 OFFSET $2',doc['id'],(page-1)*3)
+            navigation=f'\nPage {page} of {pages}.'+(f' Next: !knowledge show {doc["id"]} {page+1}' if page<pages else '')
             meta=json_object(doc['metadata'])
-            return ChatReply(f'{doc["title"]}\nState: {meta.get("knowledge_state","proposed")}\nRevision: {doc["updated_at"].isoformat()}\n'+ '\n'.join(c['content'] for c in chunks)[:5500]+f'\nReview changes: !knowledge changes {doc["id"]}\nRelated: !knowledge related {doc["id"]}\nHistory: !knowledge history {doc["id"]}',
+            return ChatReply(f'{doc["title"]}\nState: {meta.get("knowledge_state","proposed")}\nRevision: {doc["updated_at"].isoformat()}\n'+ '\n'.join(c['content'] for c in chunks)+navigation+f'\nReview changes: !knowledge changes {doc["id"]}\nRelated: !knowledge related {doc["id"]}\nHistory: !knowledge history {doc["id"]}',
                 kind='document',title=doc['title'],document_id=doc['id'],revision=doc['updated_at'].isoformat(),state=meta.get('knowledge_state','proposed'),sources=meta.get('buzz_evidence_ids',[]))
         if action in {'approve','reject','archive'}:
             if p.agent_id or p.role not in {'owner','admin'}:raise HTTPException(403,'Human channel owner/admin required')
-            doc_id,revision=args.split()
+            review_args,_,rationale=args.partition('|')
+            doc_id,revision=review_args.split()
             doc=await chat_document(app.state.pool,doc_id,p);meta=json_object(doc['metadata'])
             if action=='approve':
+                if meta.get('synthesis_batches',0)>1 and not rationale.strip():
+                    raise HTTPException(422,'Review every page and resolve cross-section conflicts, then approve DOCUMENT_ID REVISION | review rationale')
                 ids=meta.get('buzz_evidence_ids',[])
                 if ids:
                     count=await app.state.pool.fetchval('SELECT count(*) FROM public.events WHERE channel_id=$1 AND encode(id,\'hex\')=ANY($2::text[]) AND deleted_at IS NULL',UUID(p.channel_id),ids)
@@ -207,7 +212,7 @@ async def execute(app,row):
             result=await workflow.review(workflow.Review(channel_id=p.channel_id,document_id=doc_id,
                 request_id=uuid5(NAMESPACE_URL,event['id']),expected_updated_at=datetime.fromisoformat(revision),
                 state={'approve':'approved','reject':'rejected','archive':'archived'}[action],owner_pubkey=p.subject,
-                review_due=row['created_at']+timedelta(days=90),note='Buzz review event '+event['id']),request)
+                review_due=row['created_at']+timedelta(days=90),note='Buzz review event '+event['id']+(' | '+rationale.strip() if rationale.strip() else '')),request)
             return f'Knowledge {action} recorded for {doc_id}. Review history includes your verified Buzz identity.'
         if action=='feedback':
             doc_id,category,note=args.split(maxsplit=2);await chat_document(app.state.pool,doc_id,p)
@@ -258,7 +263,7 @@ async def cycle(app,key):
                 FROM gcor.buzz_knowledge_commands q JOIN public.events e ON encode(e.id,'hex')=q.event_id AND e.channel_id=q.channel_id
                 JOIN gcor.buzz_knowledge_channels c ON c.channel_id=q.channel_id
                 WHERE c.enabled AND q.delivered_at IS NULL AND q.next_attempt_at<=now() AND e.deleted_at IS NULL
-                AND (q.response IS NOT NULL OR q.attempts<3) ORDER BY q.created_at LIMIT 10''')
+                AND (q.response IS NOT NULL OR q.attempts<3) ORDER BY (btrim(e.content, E' \\t\\r\\n`') LIKE '!knowledge cancel %') DESC,q.next_attempt_at,q.created_at LIMIT 10''')
             for stored in rows:
                 row=dict(stored);row['created_at']=row.pop('event_time')
                 try:
@@ -268,25 +273,63 @@ async def cycle(app,key):
                         await pool.execute("UPDATE gcor.buzz_knowledge_commands SET delivered_at=now(),error='StaleReplySuppressed' WHERE event_id=$1",row['event_id'])
                         continue
                     if row['response'] is None:
-                        await pool.execute('UPDATE gcor.buzz_knowledge_commands SET attempts=attempts+1 WHERE event_id=$1',row['event_id'])
                         try:
                             async with asyncio.timeout(240):text=await execute(app,row)
                         except (HTTPException,ValueError) as error:
+                            from buzz_synthesis import fail_job
+                            await fail_job(pool,row)
                             text='Knowledge action unavailable: '+(str(error.detail) if isinstance(error,HTTPException) else 'Invalid command or revision. Send !knowledge help')
                         response=sign_event(key,9,[['h',str(row['channel_id'])],['e',row['event_id'],'','reply'],['gcor','knowledge-reply']]+card_tags(text,row['channel_id']),text[:12000])
                         await pool.execute('UPDATE gcor.buzz_knowledge_commands SET response=$2::jsonb WHERE event_id=$1',row['event_id'],json.dumps(response))
                     else:response=json_object(row['response'])
-                    await principal(pool,row['channel_id'],row['author'])
+                    sender=await principal(pool,row['channel_id'],row['author'])
+                    await principal(pool,row['channel_id'],bot)
+                    if not await reply_evidence_current(pool,row['event_id'],sender):
+                        await pool.execute("UPDATE gcor.buzz_knowledge_commands SET delivered_at=now(),error='StaleEvidenceSuppressed' WHERE event_id=$1",row['event_id'])
+                        continue
                     await publish(key,response)
                     await pool.execute('UPDATE gcor.buzz_knowledge_commands SET delivered_at=now(),error=NULL WHERE event_id=$1',row['event_id'])
+                except SynthesisPending:
+                    await pool.execute("UPDATE gcor.buzz_knowledge_commands SET error=NULL,next_attempt_at=now()+interval '2 seconds' WHERE event_id=$1",row['event_id'])
                 except Exception as error:
-                    await pool.execute("UPDATE gcor.buzz_knowledge_commands SET error=$2,next_attempt_at=now()+interval '30 seconds' WHERE event_id=$1",row['event_id'],type(error).__name__)
+                    await pool.execute("UPDATE gcor.buzz_knowledge_commands SET attempts=attempts+1,error=$2,next_attempt_at=now()+interval '30 seconds' WHERE event_id=$1",row['event_id'],type(error).__name__)
+                    if isinstance(error,PermissionError) or row['attempts']>=2:
+                        from buzz_synthesis import fail_job
+                        await fail_job(pool,row)
                     if isinstance(error,PermissionError):
                         await pool.execute('UPDATE gcor.buzz_knowledge_commands SET delivered_at=now() WHERE event_id=$1',row['event_id'])
+                finally:
+                    __import__('pathlib').Path('/tmp/buzz-chat-heartbeat').touch()
         finally:await lock.execute('SELECT pg_advisory_unlock(93467122)')
 
 
+async def reply_evidence_current(pool,event_id,p):
+    """A persisted answer must not outlive its evidence during delivery retries."""
+    draft=json_object(await pool.fetchval('SELECT draft FROM gcor.buzz_knowledge_commands WHERE event_id=$1',event_id))
+    dependencies=draft.get('dependencies',[]) if draft else []
+    token=current_principal.set(Principal('channel-broadcast',p.channel_id,p.access_level))
+    try:
+        for dependency in dependencies:
+            row=await pool.fetchrow("SELECT updated_at,metadata,gcor.knowledge_evidence_current(id) AS current FROM gcor.documents WHERE id=$1",UUID(dependency['id']))
+            if not row or not row['current'] or row['updated_at'].isoformat()!=dependency['revision']:
+                return False
+            meta=json_object(row['metadata'])
+            if meta.get('knowledge_state')!='approved' or meta.get('knowledge_readers') is not None:
+                return False
+        return True
+    finally:current_principal.reset(token)
+
+
 async def invalidate_removed_evidence(app):
+    channels=await app.state.pool.fetch('SELECT c.id,c.visibility::text AS visibility FROM public.channels c JOIN gcor.buzz_knowledge_channels k ON k.channel_id=c.id')
+    for channel in channels:
+        token=current_principal.set(Principal('system:buzz-evidence',str(channel['id']),
+            'public' if channel['visibility']=='public' else 'private',role='service'))
+        try: await _invalidate_channel_evidence(app)
+        finally: current_principal.reset(token)
+
+
+async def _invalidate_channel_evidence(app):
     """Withdraw approval when an original supporting event disappears or is deleted."""
     import main
     from governance_service import commit_governance

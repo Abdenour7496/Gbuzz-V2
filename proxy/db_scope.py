@@ -7,8 +7,8 @@ query that forgets an application filter still cannot see or write rows outside 
 identity's channel. asyncpg resets session settings (``RESET ALL``) when a connection
 returns to the pool, so scope never leaks between requests.
 
-Without a principal (legacy shared-secret API, background workers) connections are
-handed out untouched and the policies permit every row.
+Without a principal connections fail closed. Maintenance tasks explicitly set
+their workload capability; signed requests set their channel and access level.
 """
 from __future__ import annotations
 

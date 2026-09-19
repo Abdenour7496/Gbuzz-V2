@@ -12,7 +12,7 @@ if (-not (Test-Path -LiteralPath $ComposeFile)) {
     throw "Missing $ComposeFile. Copy docker-compose.production.lock.example.yml and replace every sha256 placeholder."
 }
 
-$composeFiles = @("-f", "docker-compose.yml")
+$composeFiles = @("-f", "docker-compose.yml", "-f", "docker-compose.enterprise.yml", "-f", "docker-compose.buzz.yml", "-f", "docker-compose.knowledge-trust.yml")
 if ($IncludeGraph) { $composeFiles += @("-f", "docker-compose.graph.yml") }
 if ($IncludeObservability) {
     $composeFiles += @("-f", "docker-compose.observability.yml")

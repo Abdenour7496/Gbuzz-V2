@@ -23,14 +23,14 @@ async def run():
         # Mirror the fields inspected in the installed Buzz 0.2.1 schema.
         await admin.execute('''
             CREATE TABLE IF NOT EXISTS public.channels(id uuid PRIMARY KEY,community_id uuid,name text DEFAULT 'Test',visibility text,deleted_at timestamptz,archived_at timestamptz);
-            CREATE TABLE IF NOT EXISTS public.users(community_id uuid,pubkey bytea,deactivated_at timestamptz);
+            CREATE TABLE IF NOT EXISTS public.users(community_id uuid,pubkey bytea,deactivated_at timestamptz,agent_type text,agent_owner_pubkey bytea);
             CREATE TABLE IF NOT EXISTS public.channel_members(community_id uuid,channel_id uuid,pubkey bytea,role text DEFAULT 'member',removed_at timestamptz);
         ''')
         key=PrivateKey(); stranger=PrivateKey(); channel=uuid4(); community=uuid4()
         pubkey=key.public_key_xonly.format()
         await admin.execute("INSERT INTO public.channels(id,community_id,visibility) VALUES($1,$2,'private')",channel,community)
         await admin.execute('INSERT INTO public.users(community_id,pubkey) VALUES($1,$2)',community,pubkey)
-        await admin.execute('INSERT INTO public.channel_members(community_id,channel_id,pubkey) VALUES($1,$2,$3)',community,channel,pubkey)
+        await admin.execute("INSERT INTO public.channel_members(community_id,channel_id,pubkey,role) VALUES($1,$2,$3,'member')",community,channel,pubkey)
         body=json.dumps({'query':'evidence','channel_id':str(channel)}).encode()
         async with httpx.AsyncClient(transport=httpx.ASGITransport(main.app),base_url='http://test') as client:
             async def ask(signer=key,raw=body,auth_body=body):
@@ -51,6 +51,10 @@ async def run():
                 assert (await ask()).status_code==403
                 response=await client.post('/api/ask',content=body,headers={'X-Gcor-Webhook-Secret':main.STACK_API_SECRET})
                 assert response.status_code==401
+                await admin.execute('UPDATE public.channels SET deleted_at=NULL WHERE id=$1',channel)
+                await admin.execute("UPDATE public.channel_members SET role='admin' WHERE channel_id=$1",channel)
+                await admin.execute("UPDATE public.users SET agent_type='automation',agent_owner_pubkey=NULL WHERE pubkey=$1",pubkey)
+                assert (await ask()).status_code==403, 'An administrator-labeled agent bypassed sponsorship'
     print('PASS: signed Buzz identity, membership/deactivation/deletion revocation, body tampering, no shared-secret fallback')
 
 

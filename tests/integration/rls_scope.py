@@ -42,6 +42,8 @@ async def run():
         both = "SELECT count(*) FROM gcor.documents WHERE id = ANY($1::uuid[])"
         ids = list(docs.values())
         assert await pool.fetchval(both, ids) == 0, 'unscoped runtime connection must fail closed'
+        assert await pool.fetchval('SELECT count(*) FROM gcor.chunks WHERE document_id=ANY($1::uuid[])', ids) == 0, 'unscoped chunk reads leaked content'
+        assert await pool.fetchval('SELECT count(*) FROM gcor.nodes WHERE document_id=ANY($1::uuid[])', ids) == 0
 
         token = current_principal.set(Principal('npub-probe', channel_a, 'public'))
         try:

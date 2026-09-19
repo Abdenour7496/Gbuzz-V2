@@ -3,7 +3,7 @@ import asyncio
 import json
 import os
 from datetime import datetime,timezone,timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 from coincurve import PrivateKey
@@ -14,12 +14,14 @@ import main
 from tests.integration.admin_db import admin_pool
 from tests.test_enterprise_access import signed_event
 from enterprise_workflows import process_one
+from access_policy import Principal, current_principal
 
 
 async def run():
     async with main.lifespan(main.app):
         pool=main.app.state.pool
         admin=await admin_pool()
+        pool=admin  # Fixture inspection only; signed API calls use the runtime pool
         key=PrivateKey();pubkey=key.public_key_xonly.format();channel=uuid4();community=uuid4()
         await admin.execute("INSERT INTO public.channels(id,community_id,visibility) VALUES($1,$2,'private')",channel,community)
         await admin.execute('INSERT INTO public.users(community_id,pubkey) VALUES($1,$2)',community,pubkey)
@@ -35,7 +37,9 @@ async def run():
             assert (await call('/api/workspace/submit',request|{'text':'different'})).status_code==409
             job_id=UUID(first.json()['id'])
             for _ in range(25):
-                await process_one(main.app)
+                token=current_principal.set(Principal('ingestion-worker','','',role='service',workload=True,operations=frozenset({'ingest'})))
+                try:await process_one(main.app)
+                finally:current_principal.reset(token)
                 job=await pool.fetchrow('SELECT status,result,error FROM gcor.ingestion_jobs WHERE id=$1',job_id)
                 if job['status']=='completed':break
                 assert job['status']!='failed',dict(job)
@@ -67,7 +71,9 @@ async def run():
             # Contributor replay of identical bytes must not reset the approved document.
             duplicate=await call('/api/workspace/submit',request|{'request_id':str(uuid4())})
             for _ in range(25):
-                await process_one(main.app)
+                token=current_principal.set(Principal('ingestion-worker','','',role='service',workload=True,operations=frozenset({'ingest'})))
+                try:await process_one(main.app)
+                finally:current_principal.reset(token)
                 status=await pool.fetchval('SELECT status FROM gcor.ingestion_jobs WHERE id=$1',UUID(duplicate.json()['id']))
                 if status=='completed':break
                 await asyncio.sleep(1)
