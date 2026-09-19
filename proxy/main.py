@@ -101,6 +101,8 @@ GOVERNANCE_RETRYING = Gauge("gcor_governance_retrying_events", "Unpublished gove
 GOVERNANCE_OLDEST = Gauge("gcor_governance_oldest_pending_seconds", "Age of oldest unpublished governance event")
 INGESTION_JOBS = Gauge('gcor_ingestion_jobs','Durable ingestion jobs by status',['status'])
 INGESTION_AGE = Gauge('gcor_ingestion_oldest_pending_seconds','Oldest unfinished ingestion job')
+SYNTHESIS_PENDING = Gauge('gcor_synthesis_pending_jobs','Unfinished synthesis jobs')
+SYNTHESIS_AGE = Gauge('gcor_synthesis_oldest_pending_seconds','Age of oldest unfinished synthesis job')
 INGESTION_HEARTBEAT = Gauge('gcor_ingestion_worker_age_seconds','Seconds since ingestion worker progress')
 
 
@@ -1068,6 +1070,12 @@ async def lifespan(app: FastAPI):
             "database": POSTGRES_DB,
         })
     app.state.pool = ScopedPool(await asyncpg.create_pool(**pool_options))
+    if os.getenv('GCOR_REQUIRE_RUNTIME_ROLE','false').lower() == 'true':
+        role = await app.state.pool.fetchrow('SELECT rolsuper,rolbypassrls,rolcreaterole FROM pg_roles WHERE rolname=current_user')
+        owns_schema = await app.state.pool.fetchval("SELECT pg_has_role(current_user,nspowner,'USAGE') FROM pg_namespace WHERE nspname='gcor'")
+        if not role or any(role.values()) or owns_schema:
+            await app.state.pool.close()
+            raise RuntimeError('Knowledge services require a non-owner runtime database role without elevated privileges')
     app.state.s3 = minio_client()
     app.state.readiness_s3 = minio_client(Config(connect_timeout=2, read_timeout=2, retries={"total_max_attempts": 1}))
     app.state.readiness_task = None
@@ -2083,6 +2091,21 @@ async def retrieve(
     }
 
 
+async def evidence_still_current(request, evidence, approved_only):
+    """Recheck the evidence after slow inference, before returning its content."""
+    for item in evidence:
+        row=await request.app.state.pool.fetchrow(
+            'SELECT metadata,content_sha256,gcor.knowledge_evidence_current(id) AS current FROM gcor.documents WHERE id=$1',
+            UUID(str(item['document_id'])))
+        if row is None or row['content_sha256']!=item.get('content_sha256'):
+            return False
+        old=json.loads(item['metadata']) if isinstance(item.get('metadata'),str) else item.get('metadata',{})
+        new=json.loads(row['metadata']) if isinstance(row['metadata'],str) else row['metadata']
+        if old!=new or (approved_only and (not row['current'] or new.get('knowledge_state')!='approved')):
+            return False
+    return True
+
+
 @app.post("/api/ask")
 async def ask(
     payload: AskRequest,
@@ -2116,9 +2139,13 @@ async def ask(
     normalized = [dict(row) | {"id": str(row["id"]), "node_id": str(row["node_id"]), "document_id": str(row["document_id"])} for row in matches]
     evidence = normalized[:min(payload.max_citations, 6)]
     citations = [authoritative_citation(item) for item in evidence]
+    answer=await generate_grounded_answer(query,evidence)
+    if not await evidence_still_current(request,normalized,payload.approved_only):
+        answer='The supporting knowledge changed while preparing this answer. Please ask again.'
+        citations=[];normalized=[];graph_nodes=[];matches=[]
     REQUEST_DURATION.observe(time.perf_counter() - started)
     return {
-        "answer": await generate_grounded_answer(query, evidence),
+        "answer": answer,
         "citations": citations,
         "chunks": normalized,
         "graph_nodes": [dict(row) | {"id": str(row["id"])} for row in graph_nodes],
@@ -2160,6 +2187,9 @@ async def ask_reply(
     evidence = normalized[:min(payload.max_citations, 6)]
     citations = [authoritative_citation(item) for item in evidence]
     answer = await generate_grounded_answer(query, evidence)
+    if not await evidence_still_current(request,evidence,payload.approved_only):
+        answer='The supporting knowledge changed while preparing this answer. Please ask again.'
+        citations=[];graph_nodes=[];matches=[]
     reply_text = compose_chat_reply(
         query,
         citations,
@@ -2951,19 +2981,35 @@ async def readiness(request: Request):
 
 @app.get("/metrics")
 async def metrics(request: Request):
-    if getattr(request.app.state,'workflows_available',False):
-        counts=await request.app.state.pool.fetch("SELECT status,count(*) AS count FROM gcor.ingestion_jobs GROUP BY status")
-        count_map={r['status']:r['count'] for r in counts}
-        for status in ('pending','processing','completed','failed','cancelled'): INGESTION_JOBS.labels(status).set(count_map.get(status,0))
-        oldest=await request.app.state.pool.fetchval("SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM gcor.ingestion_jobs WHERE status IN ('pending','processing')")
-        heartbeat=await request.app.state.pool.fetchval("SELECT EXTRACT(EPOCH FROM now()-seen_at) FROM gcor.worker_heartbeats WHERE worker='ingestion'")
-        INGESTION_AGE.set(float(oldest or 0));INGESTION_HEARTBEAT.set(float(heartbeat) if heartbeat is not None else 86400)
-    if request.app.state.governance_available:
-        governance = await request.app.state.pool.fetchrow(
-            """SELECT count(*) AS pending, count(*) FILTER(WHERE attempts>0) AS retrying,
-               EXTRACT(EPOCH FROM now()-min(created_at)) AS oldest
-               FROM gcor.governance_outbox WHERE published_at IS NULL""")
-        GOVERNANCE_PENDING.set(governance["pending"])
-        GOVERNANCE_RETRYING.set(governance["retrying"])
-        GOVERNANCE_OLDEST.set(float(governance["oldest"] or 0))
+    token=current_principal.set(Principal('ingestion-worker','','',role='service',workload=True))
+    try:
+        if getattr(request.app.state,'workflows_available',False):
+            counts=await request.app.state.pool.fetch("SELECT status,count(*) AS count FROM gcor.ingestion_jobs GROUP BY status")
+            count_map={r['status']:r['count'] for r in counts}
+            for status in ('pending','processing','completed','failed','cancelled'): INGESTION_JOBS.labels(status).set(count_map.get(status,0))
+            oldest=await request.app.state.pool.fetchval("SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM gcor.ingestion_jobs WHERE status IN ('pending','processing')")
+            heartbeat=await request.app.state.pool.fetchval("SELECT EXTRACT(EPOCH FROM now()-seen_at) FROM gcor.worker_heartbeats WHERE worker='ingestion'")
+            INGESTION_AGE.set(float(oldest or 0));INGESTION_HEARTBEAT.set(float(heartbeat) if heartbeat is not None else 86400)
+    finally: current_principal.reset(token)
+    token=current_principal.set(Principal('governance-publisher','','',role='service',workload=True))
+    try:
+        if request.app.state.governance_available:
+            governance = await request.app.state.pool.fetchrow(
+                """SELECT count(*) AS pending, count(*) FILTER(WHERE attempts>0) AS retrying,
+                   EXTRACT(EPOCH FROM now()-min(created_at)) AS oldest
+                   FROM gcor.governance_outbox WHERE published_at IS NULL""")
+            GOVERNANCE_PENDING.set(governance["pending"])
+            GOVERNANCE_RETRYING.set(governance["retrying"])
+            GOVERNANCE_OLDEST.set(float(governance["oldest"] or 0))
+    finally: current_principal.reset(token)
+    if await request.app.state.pool.fetchval("SELECT to_regclass('gcor.buzz_synthesis_jobs')"):
+        pending=0;oldest=0
+        channels=await request.app.state.pool.fetch('SELECT channel_id FROM gcor.buzz_knowledge_channels')
+        for channel in channels:
+            token=current_principal.set(Principal('system:metrics',str(channel['channel_id']),'',role='service'))
+            try:
+                summary=await request.app.state.pool.fetchrow("SELECT count(*) AS pending,EXTRACT(EPOCH FROM now()-min(created_at)) AS age FROM gcor.buzz_synthesis_jobs WHERE status IN ('running','ready')")
+                pending+=summary['pending'];oldest=max(oldest,float(summary['age'] or 0))
+            finally:current_principal.reset(token)
+        SYNTHESIS_PENDING.set(pending);SYNTHESIS_AGE.set(oldest)
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

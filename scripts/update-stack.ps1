@@ -60,10 +60,12 @@ try {
         & docker info --format '{{.ServerVersion}}' | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Docker Engine is unavailable." }
 
-        $composeArgs = @("compose", "-f", "docker-compose.yml")
-        if ($IncludeGraph) { $composeArgs += @("-f", "docker-compose.graph.yml") }
-        if ($IncludeObservability) {
-            $composeArgs += @("-f", "docker-compose.observability.yml", "--profile", "observability")
+        Import-Module (Join-Path $PSScriptRoot 'ComposePlan.psm1') -Force
+        $plan = Get-GbuzzComposePlan $repoRoot (Join-Path $repoRoot 'config/windows-startup.compose-files.json')
+        if ($IncludeGraph) { throw 'Select and review an explicit graph deployment plan before updating.' }
+        $composeArgs = @('compose') + $plan.Arguments
+        if (@($plan.Files | Where-Object { $_ -like '*knowledge-trust*' }).Count) {
+            throw 'The knowledge trust release is pinned. Build and verify a new release before replacing its images; automatic image refresh is disabled.'
         }
 
         Write-Host "Pulling configured remote image tags..."

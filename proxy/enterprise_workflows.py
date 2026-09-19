@@ -24,8 +24,8 @@ router=APIRouter(prefix='/api/workspace',dependencies=[Depends(require_schema)])
 def identity(admin=False, contributor=False):
     p=current_principal.get()
     if p is None: raise HTTPException(401,'A signed Buzz identity is required')
-    if admin and p.role not in {'owner','admin'}: raise HTTPException(403,'Channel owner or admin required')
-    if contributor and p.role not in {'owner','admin','member'}: raise HTTPException(403,'Channel contributor required')
+    if admin and (p.agent_id or p.role not in {'owner','admin'}): raise HTTPException(403,'Channel owner or admin required')
+    if contributor and (p.agent_id or p.role not in {'owner','admin','member'}): raise HTTPException(403,'Channel contributor required')
     return p
 
 
@@ -116,7 +116,9 @@ async def detail(payload: Document,request: Request):
 @router.post('/review')
 async def review(payload: Review,request: Request):
     p=identity(admin=True);pool=request.app.state.pool
-    await document(pool,payload.document_id,p)
+    reviewed=await document(pool,payload.document_id,p)
+    if payload.state=='approved' and json_object(reviewed['metadata']).get('synthesis_batches',0)>1 and not payload.note.strip():
+        raise HTTPException(422,'Multi-section synthesis requires a human review rationale resolving any conflicts')
     if payload.expected_updated_at.tzinfo is None or payload.review_due.tzinfo is None:
         raise HTTPException(422,'Review dates require a timezone')
     if payload.review_due<=datetime.now(timezone.utc): raise HTTPException(422,'Review date must be in the future')

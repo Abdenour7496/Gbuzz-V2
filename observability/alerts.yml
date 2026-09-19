@@ -1,4 +1,14 @@
 groups:
+  - name: gbuzz-knowledge-durability
+    rules:
+      - alert: KnowledgeSynthesisStalled
+        expr: gcor_synthesis_pending_jobs > 0 and gcor_synthesis_oldest_pending_seconds > 1800
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Knowledge synthesis has unfinished work older than 30 minutes"
+          description: "Inspect job status in Buzz; check local inference and worker health before retrying or cancelling."
   - name: gbuzz
     rules:
       - alert: IngestionJobsFailed
@@ -134,6 +144,20 @@ groups:
           summary: Recovery action budget is at risk of exhaustion
   - name: windows-endpoint
     rules:
+      - alert: WindowsEndpointCollectorFailed
+        expr: windows_exporter_collector_success{job="windows"} == 0 and on (job, instance) up{job="windows"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Windows collector {{ $labels.collector }} is failing on {{ $labels.endpoint }}"
+      - alert: WindowsEndpointDiskCapacityCritical
+        expr: windows_logical_disk_free_bytes{job="windows",volume=~"[A-Z]:"} / windows_logical_disk_size_bytes{job="windows",volume=~"[A-Z]:"} < 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Windows volume {{ $labels.volume }} on {{ $labels.endpoint }} has less than 5% free capacity"
       - alert: WindowsEndpointCollectorDown
         expr: up{job="windows"} == 0
         for: 5m

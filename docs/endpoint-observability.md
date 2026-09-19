@@ -33,6 +33,28 @@ Confirm `windows` is UP in Prometheus before relying on the provisioned
 binding; Grafana continues to use `OBSERVABILITY_BIND_ADDR`, which defaults to
 `127.0.0.1`.
 
+## Dashboard and alert behavior
+
+The dashboard shows each selected device separately for availability, CPU, memory,
+uptime, disk capacity, and network traffic. The disk summary is the lowest free
+percentage across drive-letter volumes, not only C:. The update collector remains
+disabled; the summary shows uptime instead of an unpopulated update count.
+
+Device collectors show partial collection failures even when the exporter is UP.
+A collector failure warns after five minutes while the endpoint remains reachable.
+Disk capacity warns below 15% for fifteen minutes and becomes critical below 5%
+for five minutes. Windows Update may normally stop when idle; its service timeline
+is informational, not a health verdict.
+
+Alert tables query Prometheus `ALERTS` directly and include pending and firing
+states. Endpoint alerts follow the device selector; the reliability table covers
+the entire stack. Empty alert tables mean no active alerts. Other missing metrics
+are shown as unavailable rather than healthy or zero.
+
+Validate alert behavior with `promtool test rules tests/test_endpoint_alerts.yml`
+from the repository root. Reload Prometheus after changing rules; Grafana reloads
+provisioned dashboards automatically.
+
 ## Rollback
 
 Redeploy without `docker-compose.endpoint-observability.yml`. Prometheus returns

@@ -16,6 +16,7 @@ COPY proxy/document_parsing.py .
 COPY proxy/graph_retrieval.py .
 COPY proxy/audit_pack.py .
 COPY proxy/buzz_chat.py .
+COPY proxy/buzz_synthesis.py .
 COPY proxy/buzz_cards.py .
 COPY proxy/buzz_wiki.py .
 COPY scripts/setup-buzz-knowledge.py ./scripts/setup-buzz-knowledge.py
@@ -23,6 +24,7 @@ COPY scripts/check-buzz-knowledge.py ./scripts/check-buzz-knowledge.py
 COPY proxy/workspace ./workspace
 COPY clients/buzz-knowledge.mjs ./workspace/buzz-knowledge.mjs
 COPY scripts/evaluate-knowledge.py ./scripts/evaluate-knowledge.py
+COPY scripts/check-knowledge-quality.py ./scripts/check-knowledge-quality.py
 COPY schemas ./schemas
 COPY tests ./tests
 

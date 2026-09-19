@@ -1,4 +1,5 @@
 Set-StrictMode -Version Latest
+Add-Type -AssemblyName System.Security
 
 function Get-BackupKey {
     $raw=$env:GBUZZ_BACKUP_KEY_BASE64

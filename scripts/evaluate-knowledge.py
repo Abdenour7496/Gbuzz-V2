@@ -4,6 +4,7 @@ No answer text or secrets are written to the report. Semantic claim support stil
 requires owner review; these checks measure retrieval and reference integrity.
 """
 import argparse
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import json
 import math
@@ -26,7 +27,8 @@ def assess(case, response):
         phrase.casefold() in serialized for phrase in case.get('forbidden_strings',[]))
     recall=len(found & required)/len(required) if required else 1.0
     no_answer_ok=not case.get('expect_no_answer',False) or not response.get('chunks')
-    return {'id':case['id'],'recall':recall,'references_valid':reference_ok,'forbidden_content':violations,
+    response_hash=hashlib.sha256(json.dumps(response,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
+    return {'id':case['id'],'response_sha256':response_hash,'recall':recall,'references_valid':reference_ok,'forbidden_content':violations,
             'passed':reference_ok and not violations and no_answer_ok and recall>=case.get('min_recall',1.0)}
 
 
