@@ -122,7 +122,7 @@ class AccessTest(unittest.IsolatedAsyncioTestCase):
 
 def signed_event(key, body=b'{}', url='http://test/api/ask', **changes):
     event={'pubkey':key.public_key_xonly.format().hex(),'created_at':int(time.time()),'kind':27235,
-           'content':'','tags':[['u',url],['method','POST'],['payload',hashlib.sha256(body).hexdigest()]]}
+           'content':'','tags':[['u',url],['method','POST'],['payload',hashlib.sha256(body).hexdigest()],['nonce',__import__('uuid').uuid4().hex]]}
     event.update(changes)
     raw=json.dumps([0,event['pubkey'],event['created_at'],event['kind'],event['tags'],event['content']],ensure_ascii=False,separators=(',',':')).encode()
     digest=hashlib.sha256(raw).digest()
@@ -150,7 +150,7 @@ class NostrTest(unittest.IsolatedAsyncioTestCase):
             verify_event(base64.b64encode(json.dumps(event).encode()),'http://test/api/ask','POST',b'{}')
 
     async def test_membership_revocation_and_private_classification(self):
-        pool=SimpleNamespace(fetchrow=AsyncMock(side_effect=[{'visibility':'private'},None]))
+        pool=SimpleNamespace(fetchrow=AsyncMock(side_effect=[{'visibility':'private','role':'member','agent_type':None},None]))
         auth=BuzzIdentity(SimpleNamespace(state=SimpleNamespace(pool=pool)),'http://test')
         body=b'{"channel_id":"11111111-1111-1111-1111-111111111111"}'
         token=signed_event(PrivateKey(),body)
@@ -161,7 +161,7 @@ class NostrTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pool.fetchrow.await_count,2)
 
     async def test_nip98_proof_is_single_use(self):
-        pool=SimpleNamespace(fetchrow=AsyncMock(return_value={'visibility':'private'}))
+        pool=SimpleNamespace(fetchrow=AsyncMock(return_value={'visibility':'private','role':'member','agent_type':None}))
         auth=BuzzIdentity(SimpleNamespace(state=SimpleNamespace(pool=pool)),'http://test')
         body=b'{"channel_id":"11111111-1111-1111-1111-111111111111"}'
         token=signed_event(PrivateKey(),body)
@@ -218,6 +218,7 @@ class EvidenceTest(unittest.IsolatedAsyncioTestCase):
                'ordinal':i,'score':1,'content':str(i),'content_sha256':'a'*64,'chunk_sha256':'b'*64,
                'metadata':{'channel_id':'a','knowledge_state':'approved'},'source_uri':'buzz://event/source'} for i in range(8)]
         with patch.object(main,'verify_stack_api_secret'), patch.object(main,'run_retrieval_query',AsyncMock(return_value=(rows,[]))), \
+             patch.object(main,'evidence_still_current',AsyncMock(return_value=True)), \
              patch.object(main,'generate_grounded_answer',AsyncMock(return_value='answer [1]')) as generate:
             result=await main.ask(main.AskRequest(query='q',channel_id='a',max_citations=2),None)
         self.assertEqual(len(result['citations']),2)

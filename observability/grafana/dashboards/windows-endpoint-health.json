@@ -1,39 +1,1131 @@
 {
-  "annotations": {"list": []},
+  "annotations": {
+    "list": []
+  },
   "editable": false,
   "panels": [
-    {"type":"stat","title":"Endpoint telemetry","gridPos":{"x":0,"y":0,"w":4,"h":4},"fieldConfig":{"defaults":{"mappings":[{"options":{"0":{"text":"DOWN","color":"red"},"1":{"text":"UP","color":"green"}},"type":"value"}],"thresholds":{"mode":"absolute","steps":[{"color":"red","value":null},{"color":"green","value":1}]}},"overrides":[]},"targets":[{"expr":"max(up{job=\"windows\",instance=~\"$instance\"})","refId":"A"}]},
-    {"type":"stat","title":"CPU used","gridPos":{"x":4,"y":0,"w":5,"h":4},"fieldConfig":{"defaults":{"unit":"percent","min":0,"max":100,"thresholds":{"mode":"absolute","steps":[{"color":"green","value":null},{"color":"orange","value":80},{"color":"red","value":90}]}},"overrides":[]},"targets":[{"expr":"100 - avg(rate(windows_cpu_time_total{job=\"windows\",instance=~\"$instance\",mode=\"idle\"}[5m])) * 100","refId":"A"}]},
-    {"type":"stat","title":"Memory used","gridPos":{"x":9,"y":0,"w":5,"h":4},"fieldConfig":{"defaults":{"unit":"percent","min":0,"max":100,"thresholds":{"mode":"absolute","steps":[{"color":"green","value":null},{"color":"orange","value":80},{"color":"red","value":90}]}},"overrides":[]},"targets":[{"expr":"100 - 100 * windows_memory_physical_free_bytes{job=\"windows\",instance=~\"$instance\"} / windows_memory_physical_total_bytes{job=\"windows\",instance=~\"$instance\"}","refId":"A"}]},
-    {"type":"stat","title":"C: free","gridPos":{"x":14,"y":0,"w":5,"h":4},"fieldConfig":{"defaults":{"unit":"percent","min":0,"max":100,"thresholds":{"mode":"absolute","steps":[{"color":"red","value":null},{"color":"orange","value":15},{"color":"green","value":25}]}},"overrides":[]},"targets":[{"expr":"100 * windows_logical_disk_free_bytes{job=\"windows\",instance=~\"$instance\",volume=\"C:\"} / windows_logical_disk_size_bytes{job=\"windows\",instance=~\"$instance\",volume=\"C:\"}","refId":"A"}]},
-    {"type":"stat","title":"Pending updates","gridPos":{"x":19,"y":0,"w":5,"h":4},"fieldConfig":{"defaults":{"thresholds":{"mode":"absolute","steps":[{"color":"green","value":null},{"color":"orange","value":1},{"color":"red","value":10}]}},"overrides":[]},"targets":[{"expr":"count(windows_update_pending_info{job=\"windows\",instance=~\"$instance\"})","refId":"A"}],"description":"Shows no data until the optional windows_exporter update collector is enabled."},
-    {"type":"timeseries","title":"CPU utilization","gridPos":{"x":0,"y":4,"w":12,"h":8},"fieldConfig":{"defaults":{"unit":"percent","min":0,"max":100},"overrides":[]},"targets":[{"expr":"100 - avg by (instance) (rate(windows_cpu_time_total{job=\"windows\",instance=~\"$instance\",mode=\"idle\"}[5m])) * 100","legendFormat":"{{instance}}","refId":"A"}]},
-    {"type":"timeseries","title":"Memory utilization","gridPos":{"x":12,"y":4,"w":12,"h":8},"fieldConfig":{"defaults":{"unit":"percent","min":0,"max":100},"overrides":[]},"targets":[{"expr":"100 - 100 * windows_memory_physical_free_bytes{job=\"windows\",instance=~\"$instance\"} / windows_memory_physical_total_bytes{job=\"windows\",instance=~\"$instance\"}","legendFormat":"{{instance}}","refId":"A"}]},
-    {"type":"timeseries","title":"Disk free capacity","gridPos":{"x":0,"y":12,"w":12,"h":8},"fieldConfig":{"defaults":{"unit":"percent","min":0,"max":100},"overrides":[]},"targets":[{"expr":"100 * windows_logical_disk_free_bytes{job=\"windows\",instance=~\"$instance\",volume=~\"[A-Z]:\"} / windows_logical_disk_size_bytes{job=\"windows\",instance=~\"$instance\",volume=~\"[A-Z]:\"}","legendFormat":"{{volume}}","refId":"A"}]},
-    {"type":"timeseries","title":"Disk throughput","gridPos":{"x":12,"y":12,"w":12,"h":8},"fieldConfig":{"defaults":{"unit":"Bps"},"overrides":[]},"targets":[{"expr":"rate(windows_logical_disk_read_bytes_total{job=\"windows\",instance=~\"$instance\",volume=~\"[A-Z]:\"}[5m])","legendFormat":"{{volume}} read","refId":"A"},{"expr":"rate(windows_logical_disk_write_bytes_total{job=\"windows\",instance=~\"$instance\",volume=~\"[A-Z]:\"}[5m])","legendFormat":"{{volume}} write","refId":"B"}]},
-    {"type":"timeseries","title":"Network throughput","gridPos":{"x":0,"y":20,"w":12,"h":8},"fieldConfig":{"defaults":{"unit":"Bps"},"overrides":[]},"targets":[{"expr":"sum by (nic) (rate(windows_net_bytes_received_total{job=\"windows\",instance=~\"$instance\"}[5m]))","legendFormat":"{{nic}} received","refId":"A"},{"expr":"sum by (nic) (rate(windows_net_bytes_sent_total{job=\"windows\",instance=~\"$instance\"}[5m]))","legendFormat":"{{nic}} sent","refId":"B"}]},
-    {"type":"state-timeline","title":"Selected Windows services","gridPos":{"x":12,"y":20,"w":12,"h":8},"fieldConfig":{"defaults":{"mappings":[{"options":{"0":{"text":"not running","color":"red"},"1":{"text":"running","color":"green"}},"type":"value"}]},"overrides":[]},"targets":[{"expr":"windows_service_state{job=\"windows\",instance=~\"$instance\",state=\"running\",name=~\"wuauserv|WinDefend|EventLog\"}","legendFormat":"{{name}}","refId":"A"}]},
-    {"type":"alertlist","title":"Active endpoint alerts","gridPos":{"x":0,"y":28,"w":24,"h":7},"options":{"alertInstanceLabelFilter":"job=windows","alertName":"","dashboardAlerts":false,"folder":{"id":null,"title":""},"groupBy":[],"groupMode":"default","maxItems":20,"sortOrder":1,"stateFilter":{"error":true,"firing":true,"noData":true,"normal":false,"pending":true}}},
-    {"type":"stat","title":"Application availability","gridPos":{"x":0,"y":35,"w":4,"h":4},"fieldConfig":{"defaults":{"mappings":[{"options":{"0":{"text":"DEGRADED","color":"red"},"1":{"text":"HEALTHY","color":"green"}},"type":"value"}],"thresholds":{"mode":"absolute","steps":[{"color":"red","value":null},{"color":"green","value":1}]}}},"targets":[{"expr":"min(up{job=~\"gcor|buzz-relay|postgres|redis|recovery-controller\"})","refId":"A"}]},
-    {"type":"stat","title":"Recovery controller","gridPos":{"x":4,"y":35,"w":4,"h":4},"fieldConfig":{"defaults":{"mappings":[{"options":{"0":{"text":"DOWN","color":"red"},"1":{"text":"UP","color":"green"}},"type":"value"}],"thresholds":{"mode":"absolute","steps":[{"color":"red","value":null},{"color":"green","value":1}]}}},"targets":[{"expr":"gbuzz_recovery_controller_up","refId":"A"}]},
-    {"type":"stat","title":"Ingestion heartbeat age","gridPos":{"x":8,"y":35,"w":4,"h":4},"fieldConfig":{"defaults":{"unit":"s","thresholds":{"mode":"absolute","steps":[{"color":"green","value":null},{"color":"orange","value":30},{"color":"red","value":60}]}}},"targets":[{"expr":"gcor_ingestion_worker_age_seconds","refId":"A"}]},
-    {"type":"stat","title":"Open ingestion work","gridPos":{"x":12,"y":35,"w":4,"h":4},"fieldConfig":{"defaults":{"thresholds":{"mode":"absolute","steps":[{"color":"green","value":null},{"color":"orange","value":1},{"color":"red","value":10}]}}},"targets":[{"expr":"sum(gcor_ingestion_jobs{status=~\"pending|processing|failed\"})","refId":"A"}]},
-    {"type":"stat","title":"Governance backlog","gridPos":{"x":16,"y":35,"w":4,"h":4},"fieldConfig":{"defaults":{"thresholds":{"mode":"absolute","steps":[{"color":"green","value":null},{"color":"orange","value":1},{"color":"red","value":10}]}}},"targets":[{"expr":"gcor_governance_pending_events + gcor_governance_retrying_events","refId":"A"}]},
-    {"type":"stat","title":"Relay connections","gridPos":{"x":20,"y":35,"w":4,"h":4},"targets":[{"expr":"buzz_ws_connections_active","refId":"A"}]},
-    {"type":"timeseries","title":"GCOR request rate by status","gridPos":{"x":0,"y":39,"w":12,"h":8},"fieldConfig":{"defaults":{"unit":"reqps"}},"targets":[{"expr":"sum by (status) (rate(gcor_http_requests_total[5m]))","legendFormat":"HTTP {{status}}","refId":"A"}]},
-    {"type":"timeseries","title":"GCOR request latency p95","gridPos":{"x":12,"y":39,"w":12,"h":8},"fieldConfig":{"defaults":{"unit":"s"}},"targets":[{"expr":"histogram_quantile(0.95, sum by (le) (rate(gcor_http_request_duration_seconds_bucket[5m])))","legendFormat":"p95","refId":"A"}]},
-    {"type":"bargauge","title":"Ingestion jobs by state","gridPos":{"x":0,"y":47,"w":8,"h":8},"fieldConfig":{"defaults":{"thresholds":{"mode":"absolute","steps":[{"color":"green","value":null},{"color":"orange","value":1},{"color":"red","value":10}]}}},"targets":[{"expr":"gcor_ingestion_jobs","legendFormat":"{{status}}","refId":"A"}]},
-    {"type":"state-timeline","title":"Recovery-managed services","gridPos":{"x":8,"y":47,"w":8,"h":8},"fieldConfig":{"defaults":{"mappings":[{"options":{"0":{"text":"unhealthy","color":"red"},"1":{"text":"healthy","color":"green"}},"type":"value"}]}},"targets":[{"expr":"gbuzz_recovery_service_healthy","legendFormat":"{{service}}","refId":"A"}]},
-    {"type":"timeseries","title":"Relay database pool","gridPos":{"x":16,"y":47,"w":8,"h":8},"targets":[{"expr":"buzz_db_pool_active","legendFormat":"active","refId":"A"},{"expr":"buzz_db_pool_idle","legendFormat":"idle","refId":"B"},{"expr":"buzz_db_pool_max","legendFormat":"maximum","refId":"C"}]},
-    {"type":"alertlist","title":"All active reliability alerts","gridPos":{"x":0,"y":55,"w":24,"h":7},"options":{"alertInstanceLabelFilter":"","alertName":"","dashboardAlerts":false,"folder":{"id":null,"title":""},"groupBy":[],"groupMode":"default","maxItems":30,"sortOrder":1,"stateFilter":{"error":true,"firing":true,"noData":true,"normal":false,"pending":true}}}
+    {
+      "type": "stat",
+      "title": "Endpoint telemetry",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "noValue": "No telemetry"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "up{job=\"windows\",instance=~\"$instance\"}",
+          "refId": "A",
+          "legendFormat": "{{endpoint}}",
+          "instant": true
+        }
+      ],
+      "id": 1,
+      "description": "One status per configured device. A healthy device never hides an unavailable one.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "CPU used",
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "noValue": "No telemetry"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "100 - avg by (instance, endpoint) (rate(windows_cpu_time_total{job=\"windows\",instance=~\"$instance\",mode=\"idle\"}[5m])) * 100",
+          "refId": "A",
+          "legendFormat": "{{endpoint}}",
+          "instant": true
+        }
+      ],
+      "id": 2,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Memory used",
+      "gridPos": {
+        "x": 9,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "noValue": "No telemetry"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "100 - 100 * windows_memory_physical_free_bytes{job=\"windows\",instance=~\"$instance\"} / windows_memory_physical_total_bytes{job=\"windows\",instance=~\"$instance\"}",
+          "refId": "A",
+          "legendFormat": "{{endpoint}}",
+          "instant": true
+        }
+      ],
+      "id": 3,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Lowest disk free",
+      "gridPos": {
+        "x": 14,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 15
+              },
+              {
+                "color": "green",
+                "value": 25
+              }
+            ]
+          },
+          "noValue": "No telemetry"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "min by (instance, endpoint) (100 * windows_logical_disk_free_bytes{job=\"windows\",instance=~\"$instance\",volume=~\"[A-Z]:\"} / windows_logical_disk_size_bytes{job=\"windows\",instance=~\"$instance\",volume=~\"[A-Z]:\"})",
+          "refId": "A",
+          "legendFormat": "{{endpoint}}",
+          "instant": true
+        }
+      ],
+      "id": 4,
+      "description": "Least free capacity across drive-letter volumes on each selected device.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Device uptime",
+      "gridPos": {
+        "x": 19,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "noValue": "No telemetry",
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "time() - windows_system_boot_time_timestamp{job=\"windows\",instance=~\"$instance\"}",
+          "refId": "A",
+          "legendFormat": "{{endpoint}}",
+          "instant": true
+        }
+      ],
+      "description": "Time since Windows last booted. Update monitoring is not enabled.",
+      "id": 5,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU utilization",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "noValue": "No telemetry"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "100 - avg by (instance, endpoint) (rate(windows_cpu_time_total{job=\"windows\",instance=~\"$instance\",mode=\"idle\"}[5m])) * 100",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "id": 6
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory utilization",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "noValue": "No telemetry"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "100 - 100 * windows_memory_physical_free_bytes{job=\"windows\",instance=~\"$instance\"} / windows_memory_physical_total_bytes{job=\"windows\",instance=~\"$instance\"}",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "id": 7
+    },
+    {
+      "type": "timeseries",
+      "title": "Disk free capacity",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "noValue": "No telemetry"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "100 * windows_logical_disk_free_bytes{job=\"windows\",instance=~\"$instance\",volume=~\"[A-Z]:\"} / windows_logical_disk_size_bytes{job=\"windows\",instance=~\"$instance\",volume=~\"[A-Z]:\"}",
+          "legendFormat": "{{endpoint}} · {{volume}}",
+          "refId": "A"
+        }
+      ],
+      "id": 8
+    },
+    {
+      "type": "timeseries",
+      "title": "Disk throughput",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "noValue": "No telemetry"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(windows_logical_disk_read_bytes_total{job=\"windows\",instance=~\"$instance\",volume=~\"[A-Z]:\"}[5m])",
+          "legendFormat": "{{endpoint}} · {{volume}} · read",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(windows_logical_disk_write_bytes_total{job=\"windows\",instance=~\"$instance\",volume=~\"[A-Z]:\"}[5m])",
+          "legendFormat": "{{endpoint}} · {{volume}} · write",
+          "refId": "B"
+        }
+      ],
+      "id": 9
+    },
+    {
+      "type": "timeseries",
+      "title": "Network throughput",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "noValue": "No telemetry"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, endpoint, nic) (rate(windows_net_bytes_received_total{job=\"windows\",instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{endpoint}} · {{nic}} · receive",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (instance, endpoint, nic) (rate(windows_net_bytes_sent_total{job=\"windows\",instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{endpoint}} · {{nic}} · send",
+          "refId": "B"
+        }
+      ],
+      "id": 10
+    },
+    {
+      "type": "state-timeline",
+      "title": "Selected Windows services",
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "text": "not running",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "running",
+                  "color": "green"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "noValue": "No telemetry"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "windows_service_state{job=\"windows\",instance=~\"$instance\",state=\"running\",name=~\"wuauserv|WinDefend|EventLog\"}",
+          "legendFormat": "{{endpoint}} · {{name}}",
+          "refId": "A"
+        }
+      ],
+      "id": 11,
+      "description": "Running state, not service health. Windows Update (wuauserv) can normally stop when idle."
+    },
+    {
+      "type": "table",
+      "title": "Active endpoint alerts",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 7
+      },
+      "options": {
+        "showHeader": true
+      },
+      "id": 12,
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No active alerts"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ALERTS{alertstate=~\"pending|firing\",job=\"windows\",instance=~\"$instance\"}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "description": "Live Prometheus pending and firing alerts. No rows means no active alerts.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "Value": true
+            },
+            "renameByName": {
+              "alertname": "Alert",
+              "endpoint": "Device",
+              "instance": "Target",
+              "severity": "Severity",
+              "alertstate": "State",
+              "job": "Service"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Application availability",
+      "gridPos": {
+        "x": 0,
+        "y": 42,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "text": "DEGRADED",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "HEALTHY",
+                  "color": "green"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "noValue": "No telemetry"
+        }
+      },
+      "targets": [
+        {
+          "expr": "min(up{job=~\"gcor|buzz-relay|postgres|redis|recovery-controller\"})",
+          "refId": "A",
+          "legendFormat": "{{endpoint}}",
+          "instant": true
+        }
+      ],
+      "id": 13,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Recovery controller",
+      "gridPos": {
+        "x": 4,
+        "y": 42,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "noValue": "No telemetry"
+        }
+      },
+      "targets": [
+        {
+          "expr": "gbuzz_recovery_controller_up",
+          "refId": "A",
+          "legendFormat": "{{endpoint}}",
+          "instant": true
+        }
+      ],
+      "id": 14,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Ingestion heartbeat age",
+      "gridPos": {
+        "x": 8,
+        "y": 42,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 30
+              },
+              {
+                "color": "red",
+                "value": 60
+              }
+            ]
+          },
+          "noValue": "No telemetry"
+        }
+      },
+      "targets": [
+        {
+          "expr": "gcor_ingestion_worker_age_seconds",
+          "refId": "A",
+          "legendFormat": "{{endpoint}}",
+          "instant": true
+        }
+      ],
+      "id": 15,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Open ingestion work",
+      "gridPos": {
+        "x": 12,
+        "y": 42,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "noValue": "No telemetry"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(gcor_ingestion_jobs{status=~\"pending|processing|failed\"})",
+          "refId": "A",
+          "legendFormat": "{{endpoint}}",
+          "instant": true
+        }
+      ],
+      "id": 16,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Governance backlog",
+      "gridPos": {
+        "x": 16,
+        "y": 42,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "noValue": "No telemetry"
+        }
+      },
+      "targets": [
+        {
+          "expr": "gcor_governance_pending_events + gcor_governance_retrying_events",
+          "refId": "A",
+          "legendFormat": "{{endpoint}}",
+          "instant": true
+        }
+      ],
+      "id": 17,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Relay connections",
+      "gridPos": {
+        "x": 20,
+        "y": 42,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "buzz_ws_connections_active",
+          "refId": "A",
+          "legendFormat": "{{endpoint}}",
+          "instant": true
+        }
+      ],
+      "id": 18,
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No telemetry"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "GCOR request rate by status",
+      "gridPos": {
+        "x": 0,
+        "y": 46,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "No telemetry"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(gcor_http_requests_total[5m]))",
+          "legendFormat": "HTTP {{status}}",
+          "refId": "A"
+        }
+      ],
+      "id": 19
+    },
+    {
+      "type": "timeseries",
+      "title": "GCOR request latency p95",
+      "gridPos": {
+        "x": 12,
+        "y": 46,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No telemetry"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(gcor_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ],
+      "id": 20
+    },
+    {
+      "type": "bargauge",
+      "title": "Ingestion jobs by state",
+      "gridPos": {
+        "x": 0,
+        "y": 54,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "noValue": "No telemetry"
+        }
+      },
+      "targets": [
+        {
+          "expr": "gcor_ingestion_jobs",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "id": 21
+    },
+    {
+      "type": "state-timeline",
+      "title": "Recovery-managed services",
+      "gridPos": {
+        "x": 8,
+        "y": 54,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "text": "unhealthy",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "healthy",
+                  "color": "green"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "noValue": "No telemetry"
+        }
+      },
+      "targets": [
+        {
+          "expr": "gbuzz_recovery_service_healthy",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "id": 22
+    },
+    {
+      "type": "timeseries",
+      "title": "Relay database pool",
+      "gridPos": {
+        "x": 16,
+        "y": 54,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "buzz_db_pool_active",
+          "legendFormat": "active",
+          "refId": "A"
+        },
+        {
+          "expr": "buzz_db_pool_idle",
+          "legendFormat": "idle",
+          "refId": "B"
+        },
+        {
+          "expr": "buzz_db_pool_max",
+          "legendFormat": "maximum",
+          "refId": "C"
+        }
+      ],
+      "id": 23,
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No telemetry"
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "All active reliability alerts",
+      "gridPos": {
+        "x": 0,
+        "y": 62,
+        "w": 24,
+        "h": 7
+      },
+      "options": {
+        "showHeader": true
+      },
+      "id": 24,
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No active alerts"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ALERTS{alertstate=~\"pending|firing\"}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "description": "Live Prometheus pending and firing alerts. No rows means no active alerts.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "Value": true
+            },
+            "renameByName": {
+              "alertname": "Alert",
+              "endpoint": "Device",
+              "instance": "Target",
+              "severity": "Severity",
+              "alertstate": "State",
+              "job": "Service"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "state-timeline",
+      "title": "Device collectors",
+      "gridPos": {
+        "x": 0,
+        "y": 35,
+        "w": 24,
+        "h": 7
+      },
+      "description": "Detects partial collection failures even while the exporter itself is reachable. Gaps mean telemetry is unavailable.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "windows_exporter_collector_success{job=\"windows\",instance=~\"$instance\"}",
+          "legendFormat": "{{endpoint}} · {{collector}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No telemetry",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Failed",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "OK",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      }
+    }
   ],
-  "refresh":"30s",
-  "schemaVersion":41,
-  "tags":["gbuzz","windows","endpoint","application-reliability","genie-sre"],
-  "templating":{"list":[{"name":"instance","label":"Endpoint","type":"query","query":{"query":"label_values(up{job=\"windows\"}, instance)","refId":"PrometheusVariableQueryEditor-VariableQuery"},"refresh":1,"includeAll":true,"allValue":".*","current":{"text":"All","value":"$__all"}}]},
-  "time":{"from":"now-6h","to":"now"},
-  "timezone":"browser",
-  "title":"Genie SRE — Host & Application Reliability",
-  "uid":"windows-endpoint-health",
-  "version":1
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": [
+    "gbuzz",
+    "windows",
+    "endpoint",
+    "application-reliability",
+    "genie-sre"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "label": "Endpoint",
+        "type": "query",
+        "query": {
+          "query": "label_values(up{job=\"windows\"}, instance)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "Genie SRE — Host & Application Reliability",
+  "uid": "windows-endpoint-health",
+  "version": 2
 }

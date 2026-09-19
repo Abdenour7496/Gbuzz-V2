@@ -9,6 +9,8 @@ $temp=[IO.Path]::GetFullPath($temp)
 if(-not $temp.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase)){throw 'Sample restore path escaped the temporary workspace.'}
 try{
     New-Item -ItemType Directory $temp|Out-Null;$manifest=Get-Content -Raw (Join-Path $BackupPath 'manifest.json')|ConvertFrom-Json;& (Join-Path $PSScriptRoot 'verify-backup.ps1') -BackupPath $BackupPath -Key $key -RepoRoot $RepoRoot -ConfigPath $ConfigPath -ExtractTo $temp
+    # Preserve the original bootstrap role: PostgreSQL role grants name their grantor.
+    # Restoring under a different bootstrap identity can reject those memberships.
     $savedEnv=Get-Content -LiteralPath (Join-Path $temp 'configuration/.env')
     $userLine=$savedEnv|Where-Object{$_ -match '^POSTGRES_USER='}|Select-Object -Last 1
     $restoreUser=if($userLine){($userLine -split '=',2)[1].Trim()}else{'buzz'}
@@ -18,6 +20,8 @@ try{
     $roles=[regex]::Replace($roles,('(?m)^CREATE ROLE '+[regex]::Escape($restoreUser)+';\r?$'),'-- Bootstrap role already exists in the isolated restore container.')
     [IO.File]::WriteAllText($rolesPath,$roles,[Text.UTF8Encoding]::new($false))
     $oldPassword=$env:POSTGRES_PASSWORD;try{$env:POSTGRES_PASSWORD=[Guid]::NewGuid().ToString('N');docker run -d --name $container -e "POSTGRES_USER=$restoreUser" -e POSTGRES_PASSWORD -e POSTGRES_DB=drill pgvector/pgvector:pg17|Out-Null}finally{$env:POSTGRES_PASSWORD=$oldPassword};if($LASTEXITCODE -ne 0){throw 'Unable to start isolated PostgreSQL.'}
+    # The init-time temporary server listens on a Unix socket only. TCP readiness
+    # waits for the final server and avoids racing its initialization shutdown.
     $ready=$false;for($i=0;$i -lt 30;$i++){docker exec $container pg_isready -h 127.0.0.1 -U $restoreUser -d drill *> $null;if($LASTEXITCODE -eq 0){$ready=$true;break};Start-Sleep 1};if(-not $ready){throw 'Isolated PostgreSQL readiness timed out.'}
     docker cp (Join-Path $temp 'postgres-globals.sql') "${container}:/tmp/postgres-globals.sql"|Out-Null;if($LASTEXITCODE -ne 0){throw 'PostgreSQL roles copy failed.'}
     docker exec $container psql -X -v ON_ERROR_STOP=1 -U $restoreUser -d drill -f /tmp/postgres-globals.sql|Out-Null;if($LASTEXITCODE -ne 0){throw 'PostgreSQL roles restore failed.'}

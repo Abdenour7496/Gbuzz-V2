@@ -5,11 +5,25 @@
     "docker-compose.safeguards.override.json",
     "docker-compose.enterprise.yml",
     "docker-compose.observability.yml",
-    "docker-compose.buzz.yml"
+    "docker-compose.buzz.yml",
+    "docker-compose.knowledge-trust.yml",
+    "docker-compose.endpoint-observability.yml"
   ],
-  "profiles": ["observability"],
+  "profiles": [
+    "observability"
+  ],
   "required_services": [
-    "relay", "postgres", "redis", "minio", "ollama", "gcor-proxy",
-    "gcor-event-projector", "mcp-postgres-gcor", "recovery-controller"
+    "relay",
+    "postgres",
+    "redis",
+    "minio",
+    "ollama",
+    "gcor-proxy",
+    "gcor-event-projector",
+    "mcp-postgres-gcor",
+    "recovery-controller",
+    "gcor-enterprise",
+    "buzz-knowledge",
+    "docker-socket-proxy"
   ]
 }

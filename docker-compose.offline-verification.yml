@@ -1,0 +1,33 @@
+# Use ONLY with docker-compose.integration.yml and project gbuzz-offline-check.
+# Reuses cached model files read-only. No production database/object volumes.
+services:
+  migrate:
+    environment:
+      EMBEDDING_DIMS: "768"
+  mock-ollama:
+    image: ollama/ollama:latest
+    build: !reset null
+    volumes:
+      - cached-models:/root/.ollama:ro
+    healthcheck:
+      test: [CMD, ollama, list]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  gcor-proxy:
+    image: gbuzz-knowledge-durable:20260914
+    build: !reset null
+    ports: !reset []
+    environment:
+      EMBEDDING_MODEL: nomic-embed-text
+      GENERATION_MODEL: qwen2.5:1.5b
+      GCOR_REQUIRE_RUNTIME_ROLE: "true"
+
+networks:
+  integration:
+    internal: true
+
+volumes:
+  cached-models:
+    external: true
+    name: ${OFFLINE_MODEL_VOLUME:-gbuzz_ollama-data}

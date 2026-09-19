@@ -8,6 +8,8 @@ The optional [knowledge workspace](http://127.0.0.1:5011/workspace) uses existin
 
 The primary objective is [knowledge generated through human–AI collaboration](docs/collaborative-knowledge-objective.md) inside Buzz. External business-source integration is not required.
 
+The current local deployment uses the [knowledge trust release](docs/knowledge-trust-implementation.md): restricted runtime roles, resumable synthesis, paginated review and a restricted recovery boundary. Its complete startup configuration is `config/windows-startup.compose-files.json`; use that saved plan when operating this installation so feature and security overlays remain applied. Broad legacy MCP content access is not the enterprise identity boundary.
+
 The [Buzz Knowledge agent](docs/buzz-chat-knowledge.md) now supports discussion synthesis, proposals, human approval and cited answers directly in Buzz. Start with `!knowledge help` in an enrolled channel.
 
 ## What Runs Where
@@ -85,7 +87,7 @@ Component ownership is intentionally non-overlapping:
    curl.exe http://127.0.0.1:5001/health
    ```
 
-   `gcor-migrate`, `minio-init`, and `ollama-init` are one-shot setup services and should show `Exited (0)`. `gcor-migrate` records each applied file in `gcor.schema_migrations` (filename + SHA-256) and skips unchanged files on later starts; a modified migration file is re-applied, so keep migrations idempotent. The relay, PostgreSQL, Redis, MinIO, Ollama, GCOR and Buzz event projector should be running. Graph services are absent unless explicitly enabled.
+   `gcor-migrate`, `minio-init`, and `ollama-init` are one-shot setup services and should show `Exited (0)`. `gcor-migrate` atomically records each applied file in `gcor.schema_migrations` (filename + SHA-256 with normalized line endings) and skips unchanged files on later starts. Changed recorded migrations are rejected; add a new migration instead. The relay, PostgreSQL, Redis, MinIO, Ollama, GCOR and Buzz event projector should be running. Graph services are absent unless explicitly enabled.
 
    In stack-only mode, `docker compose ps` should show no published host ports for `gcor-proxy` and `mcp-postgres-gcor`.
 

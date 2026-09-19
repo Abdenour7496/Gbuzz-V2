@@ -19,6 +19,9 @@ async def run():
         pool=main.app.state.pool
         await pool.execute('UPDATE gcor.buzz_knowledge_channels SET enabled=false')
         admin=await admin_pool()
+        # Fixture setup and assertions inspect storage as the test administrator.
+        # execute/cycle continue to use main.app.state.pool (the restricted role).
+        pool=admin
         await admin.execute('''
             CREATE TABLE IF NOT EXISTS public.channels(id uuid PRIMARY KEY,community_id uuid,name text,visibility text,deleted_at timestamptz,archived_at timestamptz);
             CREATE TABLE IF NOT EXISTS public.users(community_id uuid,pubkey bytea,deactivated_at timestamptz);
@@ -124,7 +127,28 @@ async def run():
             await admin.execute('UPDATE public.channel_members SET removed_at=now() WHERE channel_id=$1 AND pubkey=$2',channel,member.public_key_xonly.format())
             try:await execute(main.app,await message(member,'!knowledge list'));raise AssertionError('Revoked member allowed')
             except PermissionError:pass
-        print('Chat lifecycle passed: signed discussion, AI proposal, role checks, human approval, answer, read-time evidence validity, replay, ACL and revocation.')
+        # A long request yields, survives a new connection pool, and resumes its checkpoint.
+        from buzz_synthesis import SynthesisPending
+        long_source=await message(owner,'Long discussion evidence. '*330)
+        long_command=await message(owner,'!knowledge synthesize '+long_source['event_id'])
+        with patch.object(main,'GENERATION_MODEL',''):
+            try: await execute(main.app,long_command);raise AssertionError('Long synthesis did not yield')
+            except SynthesisPending: pass
+            checkpoint=await admin.fetchrow('SELECT parts,status FROM gcor.buzz_synthesis_jobs WHERE event_id=$1',long_command['event_id'])
+            assert len(json.loads(checkpoint['parts']))==1 and checkpoint['status']=='running'
+            # Closing/reopening every connection approximates process loss at a committed checkpoint.
+            await main.app.state.pool.expire_connections()
+            result=await execute(main.app,long_command)
+            assert 'Proposal saved:' in result,result
+            job=await admin.fetchrow('SELECT parts,status FROM gcor.buzz_synthesis_jobs WHERE event_id=$1',long_command['event_id'])
+            assert len(json.loads(job['parts']))==2 and job['status']=='published'
+            cancelled=await message(owner,'!knowledge synthesize '+long_source['event_id']+' '+source['event_id'])
+            try:await execute(main.app,cancelled);raise AssertionError('Expected checkpoint')
+            except SynthesisPending:pass
+            assert 'cancelled' in await execute(main.app,await message(owner,'!knowledge cancel '+cancelled['event_id']))
+            try:await execute(main.app,cancelled);raise AssertionError('Cancelled work resumed')
+            except __import__('fastapi').HTTPException as e:assert e.status_code==409
+        print('Chat lifecycle passed: signed evidence, review, saved answers, revision, read-time invalidation, ACL/revocation, durable multi-batch resume and cancellation.')
 
 
 if __name__=='__main__':asyncio.run(run())
