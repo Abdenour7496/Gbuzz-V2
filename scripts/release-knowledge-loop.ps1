@@ -255,7 +255,7 @@ ORDER BY 1
         $agentsMd = Join-Path $nest 'AGENTS.md'
         if ((Test-Path $agentsMd) -and -not (Select-String -LiteralPath $agentsMd -SimpleMatch '## Knowledge brain protocol' -Quiet)) {
             # Appended below the managed markers, which Buzz regenerates.
-            Add-Content -LiteralPath $agentsMd -Value ("`n" + (Get-Content (Join-Path $source 'KNOWLEDGE_PROTOCOL.md') -Raw)) -Encoding utf8
+            Add-Content -LiteralPath $agentsMd -Value ("`n" + (Get-Content (Join-Path $source 'KNOWLEDGE_PROTOCOL.md') -Raw -Encoding UTF8)) -Encoding utf8
         }
         $claudeMd = Join-Path $nest 'CLAUDE.md'
         if (-not (Test-Path $claudeMd) -or -not (Select-String -LiteralPath $claudeMd -SimpleMatch '@KNOWLEDGE_PROTOCOL.md' -Quiet)) {
