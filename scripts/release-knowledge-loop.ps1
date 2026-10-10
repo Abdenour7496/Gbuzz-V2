@@ -51,7 +51,7 @@ function Invoke-Native([string]$File, [string[]]$Arguments, [switch]$Capture, [s
         $code = $LASTEXITCODE
     } finally { $ErrorActionPreference = $previous }
     if ($code -ne 0 -and -not $AllowFailure) { throw "$File $($Arguments[0]) $($Arguments[1]) failed (exit $code)" }
-    if ($Capture) { return ,@($out) }
+    if ($Capture) { return $out }
 }
 
 function Get-DotEnvValue([string]$Name) {
