@@ -25,7 +25,7 @@ docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d --no
 
 Start the base stack and apply its existing migrations first. Set GCOR_PUBLIC_ORIGIN to the exact external origin clients sign, default http://127.0.0.1:5011. Behind TLS ingress, set the HTTPS origin explicitly. The validator does not trust caller Host or forwarded headers to select the signed destination. Query parameters are included in validation. Do not route employee traffic to the legacy proxy, MCP, Graphiti, object store or recovery controller.
 
-The reader checks Buzz 0.2.1's installed schema. Its policy deliberately requires explicit membership rather than guessing broader upstream public-channel or administrator rules. Schema/query failures deny access. Buzz identities and memberships are read only; this service does not create users or alter relay data.
+The reader checks the installed Buzz relay schema (validated on 0.2.1; the `channels`, `users` and `channel_members` columns it reads are unchanged through the Desktop 0.5.26 relay). Its policy deliberately requires explicit membership rather than guessing broader upstream public-channel or administrator rules. Schema/query failures deny access. Buzz identities and memberships are read only; this service does not create users or alter relay data.
 
 ## Signing a request
 

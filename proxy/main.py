@@ -86,7 +86,21 @@ MARKDOWN_ENVELOPE_SCHEMA_PATH = SCHEMAS_DIR / "markdown-envelope.schema.json"
 INGESTION_RECORD_SCHEMA_PATH = SCHEMAS_DIR / "ingestion-record.schema.json"
 
 
-REQUESTS = Counter("gcor_rag_requests_total", "GCOR retrieval requests")
+REQUESTS = Counter("gcor_rag_requests_total", "GCOR retrieval requests", ["caller"])
+for _caller in ("agent", "human", "service", "legacy"):
+    REQUESTS.labels(caller=_caller)  # export zero series so dashboards show absent usage
+
+
+def caller_kind() -> str:
+    """Classify the authenticated caller for knowledge-usage metrics."""
+    principal = current_principal.get()
+    if principal is None:
+        return "legacy"
+    if principal.agent_id:
+        return "agent"
+    if principal.workload or principal.role == "service":
+        return "service"
+    return "human"
 REQUEST_DURATION = Histogram("gcor_rag_duration_seconds", "GCOR retrieval duration")
 INGESTS = Counter("gcor_ingest_total", "GCOR document ingestion attempts")
 ATTACHMENT_REPLAY_ATTEMPTS = Counter("gcor_attachment_replay_attempts_total", "Attachment replay attempts")
@@ -1631,8 +1645,8 @@ async def run_retrieval_query(
                 JOIN gcor.documents d ON d.id = c.document_id
                 JOIN gcor.nodes n ON n.id = c.node_id
                 WHERE d.access_level = $2 AND $1::vector IS NOT NULL
-                  AND ($3::text IS NULL OR d.agent_id = $3)
-                  AND ($3::text IS NULL OR n.agent_id = $3)
+                  AND ($3::text IS NULL OR d.agent_id IS NULL OR d.agent_id = $3)
+                  AND ($3::text IS NULL OR n.agent_id IS NULL OR n.agent_id = $3)
                                     AND ($10::text IS NULL OR d.metadata->>'channel_id' = $10)
                                     AND ($11::text IS NULL OR d.metadata->>'channel_name' = $11)
                                     AND ($12::bool IS FALSE OR COALESCE(d.metadata->>'knowledge_state', $14::text) = 'approved')
@@ -1649,8 +1663,8 @@ async def run_retrieval_query(
                 JOIN gcor.nodes n ON n.id = c.node_id
                 CROSS JOIN search_terms
                 WHERE d.access_level = $2
-                  AND ($3::text IS NULL OR d.agent_id = $3)
-                  AND ($3::text IS NULL OR n.agent_id = $3)
+                  AND ($3::text IS NULL OR d.agent_id IS NULL OR d.agent_id = $3)
+                  AND ($3::text IS NULL OR n.agent_id IS NULL OR n.agent_id = $3)
                                     AND ($10::text IS NULL OR d.metadata->>'channel_id' = $10)
                                     AND ($11::text IS NULL OR d.metadata->>'channel_name' = $11)
                                     AND ($12::bool IS FALSE OR COALESCE(d.metadata->>'knowledge_state', $14::text) = 'approved')
@@ -1761,7 +1775,7 @@ async def run_retrieval_query(
                 WHERE n.access_level = $3
                   AND n.confidence >= $4
                   AND n.valid_from <= $5 AND (n.valid_to IS NULL OR n.valid_to >= $5)
-                  AND ($6::text IS NULL OR n.agent_id = $6)
+                  AND ($6::text IS NULL OR n.agent_id IS NULL OR n.agent_id = $6)
                 GROUP BY n.id, n.node_type, n.label, n.content, n.confidence
                 ORDER BY depth, n.confidence DESC
                 """,
@@ -2189,7 +2203,7 @@ async def retrieve(
 ):
     verify_stack_api_secret(x_gcor_webhook_secret)
     started = time.perf_counter()
-    REQUESTS.inc()
+    REQUESTS.labels(caller=caller_kind()).inc()
     matches, graph_nodes = await run_retrieval_query(
         request,
         query=payload.query,
@@ -2234,7 +2248,7 @@ async def ask(
 ):
     verify_stack_api_secret(x_gcor_webhook_secret)
     started = time.perf_counter()
-    REQUESTS.inc()
+    REQUESTS.labels(caller=caller_kind()).inc()
     principal = current_principal.get()
     if principal is not None and not (principal.workload and not principal.operations) and not payload.channel_id:
         payload.channel_id = principal.channel_id
@@ -2283,7 +2297,7 @@ async def ask_reply(
 ):
     verify_stack_api_secret(x_gcor_webhook_secret)
     started = time.perf_counter()
-    REQUESTS.inc()
+    REQUESTS.labels(caller=caller_kind()).inc()
     principal = current_principal.get()
     if principal is not None and not (principal.workload and not principal.operations) and not payload.channel_id:
         payload.channel_id = principal.channel_id

@@ -2,7 +2,10 @@
 param(
     [string]$SourceRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) 'backups/buzz-desktop-source'),
     [string]$ToolsRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) 'backups/build-tools'),
-    [ValidateRange(1,8)][int]$BuildJobs = 2
+    [ValidateRange(1,8)][int]$BuildJobs = 2,
+    # Compile in the optional mesh-llm feature (Settings > Compute / shared compute).
+    # Upstream's Windows release omits it; macOS/Linux releases include it.
+    [switch]$MeshLlm
 )
 $ErrorActionPreference='Stop'
 $env:CARGO_HOME=Join-Path $ToolsRoot 'cargo'
@@ -28,7 +31,12 @@ if(-not (Test-Path (Join-Path $opusRoot 'lib/opus.lib'))){
 $env:OPUS_LIB_DIR=$opusRoot
 Push-Location (Join-Path $SourceRoot 'desktop')
 try {
-    pnpm exec tauri build --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.windows.conf.json -- --locked
+    # Prefer pnpm.cmd: Windows PowerShell strips a bare '--' when invoking the pnpm.ps1 shim.
+    $pnpm=(Get-Command pnpm.cmd -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if(-not $pnpm){$pnpm='pnpm'}
+    $tauriArgs=@('exec','tauri','build','--target','x86_64-pc-windows-msvc','--bundles','nsis','--config','src-tauri/tauri.windows.conf.json')
+    if($MeshLlm){$tauriArgs+=@('--features','mesh-llm')}
+    & $pnpm @tauriArgs -- --locked
     if($LASTEXITCODE -ne 0){throw 'Native Buzz Desktop build failed; the installed application was not changed.'}
     Get-ChildItem -LiteralPath (Join-Path $SourceRoot 'desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis') -Filter '*.exe' |
         Select-Object FullName,Length

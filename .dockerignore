@@ -1,4 +1,5 @@
 .git
+.openclaw-local/
 .venv*/
 node_modules/
 clients/buzz-desktop/
@@ -20,3 +21,4 @@ backups/
 *.dump
 *.bak
 docs/
+agent-tools/

@@ -104,6 +104,45 @@ class AccessTest(unittest.IsolatedAsyncioTestCase):
         finally:
             current_principal.reset(reset)
 
+    async def test_agent_principal_reads_shared_channel_knowledge(self):
+        # Approved channel knowledge carries agent_id NULL. A signed agent must
+        # see it (plus its own scoped items) but never another agent's items.
+        agent='b'*64
+        queries=[]
+        class Connection:
+            async def fetch(self, sql, *args):
+                queries.append((sql, args)); return []
+        class Acquire:
+            async def __aenter__(self): return Connection()
+            async def __aexit__(self, *exc): return False
+        pool=SimpleNamespace(acquire=lambda: Acquire())
+        request=SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=pool)))
+        reset=current_principal.set(Principal(agent,'11111111-1111-1111-1111-111111111111','private',agent_id=agent,role='bot'))
+        try:
+            with patch.object(main,'embed',AsyncMock(return_value=[[0.0]])), patch.object(main,'graph_candidates',AsyncMock(return_value=[])):
+                await main.run_retrieval_query(request, query='q', top_k=1, hops=0, access_level='public',
+                    min_confidence=0, agent_id=agent, vector_weight=1, lexical_weight=0)
+        finally:
+            current_principal.reset(reset)
+        scoped=[(sql,args) for sql,args in queries if 'agent_id' in sql]
+        self.assertTrue(scoped)
+        for sql,args in scoped:
+            if True:
+                self.assertIn('d.agent_id IS NULL OR d.agent_id = $3', sql)
+                self.assertEqual(args[2], agent)
+
+    def test_knowledge_usage_is_attributed_by_caller_kind(self):
+        cases=[(None,'legacy'),
+               (Principal('a'*64,'c','private',agent_id='a'*64,role='bot'),'agent'),
+               (Principal('b'*64,'c','private',role='member'),'human'),
+               (Principal('ingestion-worker','','',role='service',workload=True),'service')]
+        for principal,expected in cases:
+            reset=current_principal.set(principal)
+            try:
+                self.assertEqual(main.caller_kind(),expected)
+            finally:
+                current_principal.reset(reset)
+
     def test_bad_configuration_is_rejected(self):
         for mode, config in [('scoped','[]'), ('typo',CONFIG), ('legacy','{}')]:
             with self.assertRaises(ValueError):

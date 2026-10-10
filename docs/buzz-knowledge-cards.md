@@ -4,7 +4,7 @@ Living-knowledge extensions add revision proposals, change review, related pages
 
 The Knowledge agent attaches a versioned `gcor-card` tag to its ordinary signed replies. The original message text remains intact, so unmodified Buzz clients continue to show commands and evidence. No new relay event kind, identity mechanism or public endpoint is introduced.
 
-The Desktop overlay targets the installed Buzz Desktop 0.5.23, commit `b9392d9d78744df365f9276e1ffe8c1baa5ea903`. It renders proposal, document, answer and workspace cards in the existing message timeline. Buttons inspect current knowledge, approve/reject a proposal revision, draft from discussion, open the library, ask a question, or navigate to an original supporting message.
+The Desktop overlay targets Buzz Desktop 0.5.26 (tag `desktop-v0.5.26`, commit `2b4b138dc5cf2d9cc1a0ceb21d9063ff56fe8bf4`). The 0.5.23 build below is the previous installed package; rebuild the installer after preparing a 0.5.26 checkout. It renders proposal, document, answer and workspace cards in the existing message timeline. Buttons inspect current knowledge, approve/reject a proposal revision, draft from discussion, open the library, ask a question, or navigate to an original supporting message.
 
 ## Security and interaction
 

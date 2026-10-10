@@ -190,5 +190,58 @@ class AttachmentFetchTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("extraction_version", pool.statement)
 
 
+
+class PendingEventSelectionTest(unittest.IsolatedAsyncioTestCase):
+    """Regression: a failed event that never succeeded has extraction_version NULL
+    and used to be re-selected on every poll, re-posting to /api/ingest forever."""
+
+    def test_failed_rows_are_excluded_from_version_clause(self):
+        self.assertIn("p.status<>'failed' AND p.extraction_version IS DISTINCT FROM $3", main.PENDING_EVENTS_SQL)
+        self.assertIn("p.attempts < $4", main.PENDING_EVENTS_SQL)
+
+    @unittest.skipUnless(__import__("os").getenv("GCOR_TEST_PG_DSN"), "set GCOR_TEST_PG_DSN to run against Postgres")
+    async def test_selection_backs_off_and_parks_failed_events(self):
+        import asyncpg
+        connection = await asyncpg.connect(__import__("os").environ["GCOR_TEST_PG_DSN"])
+        try:
+            await connection.execute("""
+                CREATE TEMP TABLE channels(id uuid primary key, name text, visibility text);
+                CREATE TEMP TABLE events(id bytea primary key, kind int, created_at timestamptz, channel_id uuid,
+                    pubkey bytea, content text, tags jsonb, deleted_at timestamptz);
+                CREATE SCHEMA IF NOT EXISTS gcor;
+                CREATE TABLE gcor.event_projection(event_id char(64) primary key, event_kind int not null, channel_id text,
+                    status text not null, attempts int not null default 0, error text, event_created_at timestamptz not null,
+                    updated_at timestamptz not null default now(), extraction_version text);
+                INSERT INTO channels VALUES ('00000000-0000-0000-0000-000000000001','ops','public');""")
+            cases = {
+                "new": None,
+                "indexed_current": ("indexed", 1, main.EXTRACTION_VERSION, 5),
+                "indexed_old_version": ("indexed", 1, "older", 5),
+                "failed_fresh_never_indexed": ("failed", 3, None, 1),
+                "failed_backoff_elapsed": ("failed", 3, None, 100),
+                "failed_backoff_pending": ("failed", 5, None, 60),
+                "failed_parked": ("failed", main.MAX_ATTEMPTS, None, 99999),
+                "processing_crashed": ("processing", 1, None, 30),
+            }
+            names = {}
+            for index, (name, state) in enumerate(cases.items()):
+                event_id = bytes([index + 1]) * 32
+                names[event_id.hex()] = name
+                await connection.execute(
+                    "INSERT INTO events VALUES($1,9,now(),'00000000-0000-0000-0000-000000000001',$1,'x','[]',NULL)", event_id)
+                if state:
+                    status, attempts, version, age = state
+                    await connection.execute(
+                        """INSERT INTO gcor.event_projection(event_id,event_kind,status,attempts,event_created_at,updated_at,extraction_version)
+                           VALUES($1,9,$2,$3,now(),now()-make_interval(secs=>$4),$5)""",
+                        event_id.hex(), status, attempts, float(age), version)
+            rows = await connection.fetch(main.PENDING_EVENTS_SQL, [9], 50, main.EXTRACTION_VERSION,
+                                          main.MAX_ATTEMPTS, main.RETRY_BASE_SECONDS, main.RETRY_MAX_SECONDS)
+            selected = {names[row["event_id"]] for row in rows}
+            self.assertEqual({"new", "indexed_old_version", "failed_backoff_elapsed", "processing_crashed"}, selected)
+        finally:
+            await connection.execute("DROP TABLE IF EXISTS gcor.event_projection")
+            await connection.close()
+
 if __name__ == "__main__":
     unittest.main()

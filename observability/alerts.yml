@@ -130,7 +130,7 @@ groups:
     annotations:
       summary: Redis is using more than 85% of its memory limit
   - alert: HostDiskCapacityLow
-    expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} < 0.15
+    expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|9p"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|9p"} < 0.15
     for: 10m
     labels:
       severity: warning
