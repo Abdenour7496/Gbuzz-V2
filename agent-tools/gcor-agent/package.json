@@ -1,0 +1,27 @@
+{
+  "name": "gcor-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Signed GCOR knowledge access for Buzz agents (NIP-98, agent's own key).",
+  "type": "module",
+  "bin": {
+    "gcor-agent": "dist/gcor-agent.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "build": "esbuild src/main.mjs --bundle --platform=node --format=esm --target=node20 --outfile=dist/gcor-agent.mjs --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
+    "@scure/base": "1.2.6",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.9"
+  }
+}

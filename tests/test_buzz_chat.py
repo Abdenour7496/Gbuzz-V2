@@ -46,3 +46,36 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
     async def test_generated_reply_not_independent_evidence(self):
         pool=AsyncMock();row=event_row();pool.fetch.return_value=[row]
         with self.assertRaises(Exception):await source_events(pool,str(row['channel_id']),[row['event_id']])
+
+
+class AgentAuthorityTests(unittest.IsolatedAsyncioTestCase):
+    """Agents contribute knowledge; only humans establish it."""
+
+    def app_for(self, role, agent_type):
+        from types import SimpleNamespace
+        pool=AsyncMock()
+        pool.fetchrow.return_value={'visibility':'private','role':role,'agent_type':agent_type,'agent_owner_pubkey':b'a'*32}
+        pool.fetchval.return_value=1  # sponsor active
+        return SimpleNamespace(state=SimpleNamespace(pool=pool))
+
+    async def test_sponsored_agent_cannot_review_even_with_owner_role(self):
+        from fastapi import HTTPException
+        from buzz_chat import execute
+        for action in ('approve','reject','archive'):
+            row=event_row(content=f'!knowledge {action} {uuid4()} 2026-10-10T00:00:00+00:00')
+            with self.assertRaises(HTTPException) as error:
+                await execute(self.app_for('owner','agent'),row)
+            self.assertEqual(error.exception.status_code,403,action)
+
+    async def test_human_owner_reaches_review(self):
+        # The same command from a human owner passes the authority check (and
+        # then fails later on the mocked document lookup, not with 403).
+        from fastapi import HTTPException
+        from buzz_chat import execute
+        row=event_row(content=f'!knowledge approve {uuid4()} 2026-10-10T00:00:00+00:00')
+        try:
+            await execute(self.app_for('owner',None),row)
+        except HTTPException as error:
+            self.assertNotEqual(error.status_code,403)
+        except Exception:
+            pass

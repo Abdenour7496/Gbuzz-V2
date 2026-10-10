@@ -8,7 +8,8 @@
     {"type": "timeseries", "title": "PostgreSQL connections", "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}, "targets": [{"expr": "sum(pg_stat_activity_count)", "legendFormat": "connections", "refId": "A"}]},
     {"type": "timeseries", "title": "Redis memory", "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8}, "targets": [{"expr": "redis_memory_used_bytes", "legendFormat": "used", "refId": "A"}, {"expr": "redis_memory_max_bytes", "legendFormat": "limit", "refId": "B"}]},
     {"type": "stat", "title": "Managed service health", "gridPos": {"x": 0, "y": 16, "w": 12, "h": 6}, "targets": [{"expr": "gbuzz_recovery_service_healthy", "legendFormat": "{{service}}", "refId": "A"}]},
-    {"type": "timeseries", "title": "Automated recovery actions", "gridPos": {"x": 12, "y": 16, "w": 12, "h": 6}, "targets": [{"expr": "increase(gbuzz_recovery_actions_total[1h])", "legendFormat": "{{service}} {{result}}", "refId": "A"}]}
+    {"type": "timeseries", "title": "Automated recovery actions", "gridPos": {"x": 12, "y": 16, "w": 12, "h": 6}, "targets": [{"expr": "increase(gbuzz_recovery_actions_total[1h])", "legendFormat": "{{service}} {{result}}", "refId": "A"}]},
+    {"type": "timeseries", "title": "Knowledge brain use by caller", "gridPos": {"x": 0, "y": 22, "w": 12, "h": 8}, "targets": [{"expr": "sum by (caller) (increase(gcor_rag_requests_total[1h]))", "legendFormat": "{{caller}}", "refId": "A"}]}
   ],
   "schemaVersion": 41,
   "tags": ["gbuzz"],

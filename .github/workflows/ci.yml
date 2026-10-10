@@ -168,6 +168,14 @@ jobs:
           cache-dependency-path: clients/buzz-desktop/package-lock.json
       - name: Verify Buzz signing adapter
         run: node --test tests/test_buzz_client.mjs
+      - name: Verify agent knowledge client and committed bundle
+        working-directory: agent-tools/gcor-agent
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          cp dist/gcor-agent.mjs /tmp/committed.mjs
+          npm run build
+          cmp dist/gcor-agent.mjs /tmp/committed.mjs || (echo "dist/gcor-agent.mjs is stale; run npm run build" && exit 1)
       - name: Verify knowledge card model, view and command construction
         working-directory: clients/buzz-desktop
         run: |

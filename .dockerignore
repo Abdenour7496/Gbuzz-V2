@@ -21,3 +21,4 @@ backups/
 *.dump
 *.bak
 docs/
+agent-tools/
