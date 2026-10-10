@@ -47,7 +47,7 @@ function Warn([string]$Text) { Write-Host "    !!  $Text" -ForegroundColor Yello
 function Invoke-Native([string]$File, [string[]]$Arguments, [switch]$Capture, [switch]$AllowFailure) {
     $previous = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     try {
-        if ($Capture) { $out = & $File @Arguments 2>$null } else { & $File @Arguments 2>&1 | ForEach-Object { Write-Host "      $_" } }
+        if ($Capture) { $out = & $File @Arguments 2>$null } else { & $File @Arguments 2>&1 | ForEach-Object { $line = "$_"; if ($line -and $line -ne 'System.Management.Automation.RemoteException') { Write-Host "      $line" } } }
         $code = $LASTEXITCODE
     } finally { $ErrorActionPreference = $previous }
     if ($code -ne 0 -and -not $AllowFailure) { throw "$File $($Arguments[0]) $($Arguments[1]) failed (exit $code)" }
