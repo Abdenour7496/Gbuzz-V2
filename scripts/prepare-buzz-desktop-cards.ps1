@@ -8,12 +8,17 @@ $ErrorActionPreference='Stop'
 $repoRoot=Split-Path -Parent $PSScriptRoot
 $overlay=Join-Path $repoRoot 'clients/buzz-desktop'
 $actual=git -C $SourceRoot rev-parse HEAD
-if($LASTEXITCODE -ne 0 -or $actual -ne 'b9392d9d78744df365f9276e1ffe8c1baa5ea903') {
-    throw 'Use a separate checkout of Buzz Desktop desktop-v0.5.23 at the pinned commit.'
+if($LASTEXITCODE -ne 0 -or $actual -ne '2b4b138dc5cf2d9cc1a0ceb21d9063ff56fe8bf4') {
+    throw 'Use a separate checkout of Buzz Desktop desktop-v0.5.26 at the pinned commit.'
 }
 $patch=Join-Path $overlay 'MessageRow.patch'
-git -C $SourceRoot apply --reverse --check $patch 2>$null
-if($LASTEXITCODE -ne 0) {
+# Windows PowerShell 5.1 turns redirected native stderr into a terminating error under Stop;
+# the reverse check is expected to fail when the patch is not yet applied.
+$ErrorActionPreference='Continue'
+git -C $SourceRoot apply --reverse --check $patch 2>$null | Out-Null
+$alreadyApplied = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference='Stop'
+if(-not $alreadyApplied) {
     git -C $SourceRoot apply --check $patch
     if($LASTEXITCODE -ne 0){throw 'Message renderer differs; review the patch before applying.'}
     git -C $SourceRoot apply $patch

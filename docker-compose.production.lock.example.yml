@@ -8,9 +8,9 @@ services:
   redis:
     image: redis@sha256:REPLACE_WITH_64_HEX_CHARACTERS
   minio:
-    image: minio/minio@sha256:REPLACE_WITH_64_HEX_CHARACTERS
+    image: quay.io/minio/minio@sha256:REPLACE_WITH_64_HEX_CHARACTERS
   minio-init:
-    image: minio/mc@sha256:REPLACE_WITH_64_HEX_CHARACTERS
+    image: quay.io/minio/mc@sha256:REPLACE_WITH_64_HEX_CHARACTERS
   ollama:
     image: ollama/ollama@sha256:REPLACE_WITH_64_HEX_CHARACTERS
   ollama-init:

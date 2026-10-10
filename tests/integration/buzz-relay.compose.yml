@@ -3,7 +3,7 @@ services:
     image: redis:7-alpine
     networks: [integration]
   chat-relay:
-    image: ghcr.io/block/buzz:0.2.1
+    image: ghcr.io/block/buzz:sha-7ebf1be
     healthcheck:
       test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8080; printf \"GET /_readiness HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n\" >&3; grep -q \"200 OK\" <&3'"]
       interval: 3s

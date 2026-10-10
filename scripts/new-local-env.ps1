@@ -60,7 +60,7 @@ $gcorS3SecretKey = & $base64Secret 32
 
 $content = @"
 # Generated for a local Buzz + GCOR deployment. Keep this file private and stable.
-BUZZ_IMAGE=ghcr.io/block/buzz:0.2.1
+BUZZ_IMAGE=ghcr.io/block/buzz:sha-7ebf1be
 BUZZ_HTTP_PORT=3000
 MINIO_API_PORT=9000
 MINIO_CONSOLE_PORT=9001

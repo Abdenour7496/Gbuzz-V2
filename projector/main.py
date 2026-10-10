@@ -28,6 +28,26 @@ KNOWLEDGE_MODE = os.getenv("PROJECTOR_KNOWLEDGE_MODE", "selective").strip().case
 MAX_ATTACHMENT_BYTES = int(os.getenv("PROJECTOR_MAX_ATTACHMENT_BYTES", str(50 * 1024 * 1024)))
 ATTACHMENT_FETCH_ATTEMPTS = int(os.getenv("PROJECTOR_ATTACHMENT_FETCH_ATTEMPTS", "3"))
 EXTRACTION_VERSION = os.getenv("PROJECTOR_EXTRACTION_VERSION", "gcor.parser.v1")
+# Failed events back off exponentially and are parked after MAX_ATTEMPTS so a
+# permanently bad event (integrity/policy rejection) cannot re-ingest forever.
+MAX_ATTEMPTS = int(os.getenv("PROJECTOR_MAX_ATTEMPTS", "12"))
+RETRY_BASE_SECONDS = float(os.getenv("PROJECTOR_RETRY_BASE_SECONDS", "10"))
+RETRY_MAX_SECONDS = float(os.getenv("PROJECTOR_RETRY_MAX_SECONDS", "3600"))
+
+# A failed row that never succeeded has extraction_version NULL, so the version
+# clause must exclude failed rows or it bypasses the backoff (retry every poll).
+PENDING_EVENTS_SQL = """SELECT encode(e.id,'hex') AS event_id,e.kind,e.created_at,e.channel_id::text,
+          c.name AS channel_name,c.visibility::text AS visibility,encode(e.pubkey,'hex') AS author_pubkey,
+          e.content,e.tags
+   FROM events e JOIN channels c ON c.id=e.channel_id
+   LEFT JOIN gcor.event_projection p ON p.event_id=encode(e.id,'hex')
+   WHERE e.deleted_at IS NULL AND e.channel_id IS NOT NULL AND e.kind=ANY($1::int[])
+     AND (p.event_id IS NULL
+          OR (p.status<>'failed' AND p.extraction_version IS DISTINCT FROM $3)
+          OR (p.status='failed' AND p.attempts < $4
+              AND p.updated_at < now() - make_interval(
+                  secs => LEAST($5::float8 * power(2, GREATEST(p.attempts-1, 0)), $6::float8))))
+   ORDER BY e.created_at,e.id LIMIT $2"""
 HEX_64 = re.compile(r"^[0-9a-fA-F]{64}$")
 MEDIA_SUFFIXES = {
     "application/pdf": {".pdf"},
@@ -329,16 +349,8 @@ async def run() -> None:
                 __import__('pathlib').Path('/tmp/projector-heartbeat').touch()
                 await invalidate_stale_evidence(pool)
                 rows = await pool.fetch(
-                    """SELECT encode(e.id,'hex') AS event_id,e.kind,e.created_at,e.channel_id::text,
-                              c.name AS channel_name,c.visibility::text AS visibility,encode(e.pubkey,'hex') AS author_pubkey,
-                              e.content,e.tags
-                       FROM events e JOIN channels c ON c.id=e.channel_id
-                       LEFT JOIN gcor.event_projection p ON p.event_id=encode(e.id,'hex')
-                       WHERE e.deleted_at IS NULL AND e.channel_id IS NOT NULL AND e.kind=ANY($1::int[])
-                         AND (p.event_id IS NULL OR p.extraction_version IS DISTINCT FROM $3
-                              OR (p.status='failed' AND p.updated_at < now()-interval '10 seconds'))
-                       ORDER BY e.created_at,e.id LIMIT $2""",
-                    KINDS, BATCH_SIZE, EXTRACTION_VERSION,
+                    PENDING_EVENTS_SQL,
+                    KINDS, BATCH_SIZE, EXTRACTION_VERSION, MAX_ATTEMPTS, RETRY_BASE_SECONDS, RETRY_MAX_SECONDS,
                 )
                 for row in rows:
                     __import__('pathlib').Path('/tmp/projector-heartbeat').touch()

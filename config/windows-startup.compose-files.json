@@ -1,29 +1,37 @@
-{
-  "project": "gbuzz",
-  "files": [
-    "docker-compose.yml",
-    "docker-compose.safeguards.override.json",
-    "docker-compose.enterprise.yml",
-    "docker-compose.observability.yml",
-    "docker-compose.buzz.yml",
-    "docker-compose.knowledge-trust.yml",
-    "docker-compose.endpoint-observability.yml"
-  ],
-  "profiles": [
-    "observability"
-  ],
-  "required_services": [
-    "relay",
-    "postgres",
-    "redis",
-    "minio",
-    "ollama",
-    "gcor-proxy",
-    "gcor-event-projector",
-    "mcp-postgres-gcor",
-    "recovery-controller",
-    "gcor-enterprise",
-    "buzz-knowledge",
-    "docker-socket-proxy"
-  ]
+﻿{
+    "project":  "gbuzz",
+    "files":  [
+                  "docker-compose.yml",
+                  "docker-compose.safeguards.override.json",
+                  "docker-compose.enterprise.yml",
+                  "docker-compose.observability.yml",
+                  "docker-compose.buzz.yml",
+                  "docker-compose.knowledge-trust.yml",
+                  "docker-compose.endpoint-observability.yml",
+                  "config/docker-compose.projector-attachment.yml"
+              ],
+    "profiles":  [
+                     "observability"
+                 ],
+    "required_services":  [
+                              "relay",
+                              "postgres",
+                              "redis",
+                              "minio",
+                              "ollama",
+                              "gcor-proxy",
+                              "gcor-event-projector",
+                              "mcp-postgres-gcor",
+                              "recovery-controller",
+                              "gcor-enterprise",
+                              "buzz-knowledge",
+                              "docker-socket-proxy",
+                              "prometheus",
+                              "grafana",
+                              "alertmanager",
+                              "alert-receiver",
+                              "postgres-exporter",
+                              "redis-exporter",
+                              "node-exporter"
+                          ]
 }

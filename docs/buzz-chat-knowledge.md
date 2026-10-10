@@ -1,6 +1,6 @@
 # Knowledge collaboration inside Buzz
 
-The Knowledge agent connects ordinary Buzz messages to GCOR proposals, human review and approved answers. Use Buzz Desktop as usual; no separate knowledge portal or new employee identity is required. This adapter uses the deployed Buzz 0.2.1 protocol without replacing the relay or Desktop application.
+The Knowledge agent connects ordinary Buzz messages to GCOR proposals, human review and approved answers. Use Buzz Desktop as usual; no separate knowledge portal or new employee identity is required. This adapter targets the Buzz relay image `ghcr.io/block/buzz:sha-7ebf1be` (relay code matching Buzz Desktop 0.5.26; previously relay 0.2.1) without replacing the relay or Desktop application.
 
 ## Use in Buzz
 

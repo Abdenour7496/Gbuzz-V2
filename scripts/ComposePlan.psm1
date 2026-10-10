@@ -30,4 +30,19 @@ function Assert-GbuzzRequiredServices($Plan,$ResolvedConfig) {
     if($missing.Count){throw "Resolved Compose configuration is missing required services: $($missing -join ', ')"}
 }
 
-Export-ModuleMember -Function Get-GbuzzComposePlan,Get-GbuzzRelativePath,Assert-GbuzzRequiredServices
+function Assert-GbuzzRuntimePlan($Plan,$Containers) {
+    $missing=@();$duplicate=@();$unhealthy=@();$missingFiles=@()
+    foreach($service in $Plan.RequiredServices){
+        $matches=@($Containers|Where-Object{$_.Service -ceq $service})
+        if($matches.Count-eq0){$missing+=$service;continue}
+        if($matches.Count-ne1){$duplicate+=$service}
+        if(@($matches|Where-Object{$_.Health -ceq'unhealthy'}).Count){$unhealthy+=$service}
+    }
+    foreach($container in $Containers){foreach($path in @($container.ConfigFiles)){if($path-and-not(Test-Path -LiteralPath $path)){$missingFiles+="$($container.Name): $path"}}}
+    if($missing.Count){throw "Running Compose project is missing required services: $($missing -join ', ')"}
+    if($duplicate.Count){throw "Running Compose project has duplicate required services: $($duplicate -join ', ')"}
+    if($unhealthy.Count){throw "Running Compose project has unhealthy required services: $($unhealthy -join ', ')"}
+    if($missingFiles.Count){throw "Running containers reference missing Compose files: $($missingFiles -join '; ')"}
+}
+
+Export-ModuleMember -Function Get-GbuzzComposePlan,Get-GbuzzRelativePath,Assert-GbuzzRequiredServices,Assert-GbuzzRuntimePlan
