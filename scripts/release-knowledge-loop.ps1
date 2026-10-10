@@ -75,7 +75,10 @@ function Set-DotEnvValue([string]$Name, [string]$Value) {
 # The running stack is authoritative: the startup plan has drifted before
 # (docs: buzz-0.5.26 upgrade). Use the files the containers were created from.
 function Get-RunningComposeArgs {
-    $label = Invoke-Native docker @('inspect', '--format', '{{ index .Config.Labels "com.docker.compose.project.config_files" }}', 'gbuzz-gcor-proxy-1') -Capture
+    # Read the raw JSON: Windows PowerShell 5.1 mangles embedded double quotes in
+    # native arguments, so a --format template with quoted label keys breaks.
+    $inspect = (Invoke-Native docker @('inspect', 'gbuzz-gcor-proxy-1') -Capture) -join "`n" | ConvertFrom-Json
+    $label = @($inspect)[0].Config.Labels.'com.docker.compose.project.config_files'
     $files = @(("$label".Trim()) -split ',' | Where-Object { $_ })
     if (-not $files.Count) { throw 'Cannot read the compose file set from gbuzz-gcor-proxy-1. Is the stack running?' }
     if (-not ($files | Where-Object { $_ -like '*knowledge-trust*' })) { throw 'Running stack is not on the knowledge-trust overlay; refusing to release into an unknown baseline.' }
