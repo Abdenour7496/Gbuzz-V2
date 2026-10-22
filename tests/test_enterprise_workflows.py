@@ -120,3 +120,21 @@ class WorkflowRoles(unittest.IsolatedAsyncioTestCase):
             await process_one(SimpleNamespace(state=SimpleNamespace(pool=pool)))
             ingest.assert_not_awaited()
         self.assertEqual(pool.execute.call_args.args[3],'failed')
+
+
+class IngestionRetryPolicyTest(unittest.TestCase):
+    def test_backoff_grows_and_is_capped(self):
+        import enterprise_workflows as wf
+        delays = [wf.retry_delay(n) for n in range(1, wf.JOB_MAX_ATTEMPTS + 1)]
+        self.assertEqual(delays[0], wf.JOB_BACKOFF_BASE_SECONDS)
+        self.assertTrue(all(b >= a for a, b in zip(delays, delays[1:])))
+        self.assertLessEqual(max(delays), wf.JOB_BACKOFF_MAX_SECONDS)
+        # Defaults tolerate well over an hour of dependency outage before a job is parked as failed.
+        self.assertGreater(sum(delays[:-1]), 3600)
+
+    def test_lease_is_short_and_renewed(self):
+        import enterprise_workflows as wf
+        source = open(wf.__file__).read()
+        self.assertLessEqual(wf.JOB_LEASE_SECONDS, 120)
+        self.assertIn('renew_lease(pool,row[\'id\'],lease)', source)
+        self.assertNotIn("interval '6 minutes'", source)

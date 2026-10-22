@@ -72,7 +72,14 @@ Configure these in `.env`; Compose passes them to the proxy. Defaults:
 | --- | --- | --- |
 | `MAX_INGEST_FILE_BYTES` | 26214400 (25 MiB) | File/content ceiling; uploaded reads stop at the limit plus one byte. |
 | `MAX_REQUEST_BODY_BYTES` | 27262976 (26 MiB) | Whole API request, including multipart overhead; 413 before parsing or application writes. Actual bytes are checked even without an accurate Content-Length. |
-| `MAX_API_IN_FLIGHT` | 4 | Concurrent API requests per proxy process. Excess requests receive 429 with `Retry-After: 2`; health/metrics remain accessible. |
+| `MAX_API_IN_FLIGHT` | 4 | Concurrent API requests per proxy process. Further requests wait in a bounded FIFO queue (below); health/metrics remain accessible. |
+| `MAX_API_QUEUED` | 32 | Requests allowed to wait for a slot. When the queue is full, or a wait exceeds `API_QUEUE_SECONDS`, the request receives 429 with `Retry-After: 2`. |
+| `API_QUEUE_SECONDS` | 10 | Longest queue wait before 429. Set `MAX_API_QUEUED=0` to restore immediate rejection. |
+| `GCOR_STATEMENT_TIMEOUT_MS` | 30000 | PostgreSQL `statement_timeout` for every GCOR connection, so an abandoned or runaway query cannot keep consuming database CPU. `0` disables. |
+| `RETRIEVAL_VECTOR_WEIGHT` | 0.5 | Default weight of the vector leg in reciprocal-rank fusion (keyword leg = 1 − this). Requests may still pass `vector_weight`/`lexical_weight`. |
+| `RETRIEVAL_MIN_VECTOR_SCORE` | 0.45 | Abstention floor: if no candidate shares a keyword with the question and the best cosine similarity is below this, retrieval returns nothing and `/api/ask` answers `No authorized evidence was found.` |
+| `INGESTION_JOB_MAX_ATTEMPTS` | 12 | Attempts before a workspace ingestion job is parked as failed. Retries back off exponentially from `INGESTION_JOB_BACKOFF_SECONDS` (15) to `INGESTION_JOB_BACKOFF_MAX_SECONDS` (900), covering roughly 1.5 hours of dependency outage. |
+| `INGESTION_JOB_LEASE_SECONDS` | 60 | Job lease, renewed by the worker every third of the lease while it runs; a crashed worker's job is resumed after about a minute. |
 | `REQUEST_BODY_TIMEOUT_SECONDS` | 60 | Time allowed to receive an API body; 408 before work starts. Does not cancel a running database mutation. |
 | `MAX_QUERY_CHARS` | 10000 | Ask/retrieve query ceiling; 422 on violation. |
 | `MAX_ATTACHMENTS_PER_REQUEST` | 100 | Combined explicit and session attachments, validated before document writes. |

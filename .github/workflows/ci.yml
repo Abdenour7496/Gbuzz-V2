@@ -37,6 +37,7 @@ jobs:
       GCOR_DB_PASSWORD: ci-placeholder
       GCOR_RELATIONSHIP_DB_USER: relationship_ci
       GCOR_RELATIONSHIP_DB_PASSWORD: ci-placeholder
+      AUDIT_PACK_SIGNING_KEY: ci-placeholder-not-a-real-signing-key
     strategy:
       fail-fast: false
       matrix:
@@ -126,7 +127,7 @@ jobs:
         if: matrix.component == 'proxy'
         env:
           PYTHONPATH: proxy
-        run: python -m unittest -v tests/test_production_safeguards.py tests/test_governance_egress.py tests/test_enterprise_access.py tests/test_enterprise_workflows.py tests/test_evaluation.py tests/test_graph_retrieval.py tests/test_buzz_chat.py tests/test_buzz_synthesis.py tests/test_buzz_cards.py tests/test_backup_evidence.py tests/test_minio_references.py tests/test_reliability_automation.py tests/test_governance_control_package.py
+        run: python -m unittest -v tests/test_ingest_governance.py tests/test_production_safeguards.py tests/test_governance_egress.py tests/test_enterprise_access.py tests/test_enterprise_workflows.py tests/test_evaluation.py tests/test_graph_retrieval.py tests/test_buzz_chat.py tests/test_buzz_synthesis.py tests/test_buzz_cards.py tests/test_backup_evidence.py tests/test_minio_references.py tests/test_reliability_automation.py tests/test_governance_control_package.py
 
   recovery-tests:
     name: Python tests (recovery-controller)
@@ -150,10 +151,12 @@ jobs:
       - name: LAN security negative tests
         shell: powershell
         run: |
-          ./tests/test_lan_security.ps1
-          ./tests/test_release_evidence_behavior.ps1
-          ./tests/test_lan_firewall_behavior.ps1
-          ./tests/test_lan_acl_behavior.ps1
+          $failed = @()
+          foreach ($test in './tests/test_lan_security.ps1','./tests/test_release_evidence_behavior.ps1','./tests/test_lan_firewall_behavior.ps1','./tests/test_lan_acl_behavior.ps1') {
+            try { & $test; if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "exit code $LASTEXITCODE" } }
+            catch { $failed += $test; Write-Host "::error title=$test::$($_.Exception.Message) at $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" }
+          }
+          if ($failed.Count) { throw "Failed: $($failed -join ', ')" }
 
   integration:
     name: Integration lifecycle
@@ -183,7 +186,14 @@ jobs:
           npm test
       - name: Build and run the isolated integration stack
         run: |
-          docker compose -p gbuzz-integration -f docker-compose.integration.yml up -d --build --wait --wait-timeout 120 gcor-proxy
+          if ! docker compose -p gbuzz-integration -f docker-compose.integration.yml build > integration-build.log 2>&1; then
+            tail -40 integration-build.log | while read -r line; do echo "::error title=integration build::${line}"; done
+            exit 1
+          fi
+          if ! docker compose -p gbuzz-integration -f docker-compose.integration.yml up -d --wait --wait-timeout 120 gcor-proxy > integration-up.log 2>&1; then
+            tail -40 integration-up.log | while read -r line; do echo "::error title=integration up::${line}"; done
+            exit 1
+          fi
           docker compose -p gbuzz-integration -f docker-compose.integration.yml run --rm --no-deps smoke
       - name: Verify governance transaction failures and durable publication
         run: |
@@ -222,7 +232,15 @@ jobs:
           docker compose -p gbuzz-integration -f docker-compose.integration.yml exec -T -e PYTHONPATH=/app -e POSTGRES_DB=integration_relay gcor-proxy python /app/tests/integration/buzz_relay_lifecycle.py
       - name: Show service logs after failure
         if: failure()
-        run: docker compose -p gbuzz-integration -f docker-compose.integration.yml logs --no-color
+        run: |
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml ps -a
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml logs --no-color
+          # Also surface a short digest as annotations, which stay readable when raw logs are not.
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml ps -a --format '{{.Service}} {{.State}} {{.Status}}' \
+            | while read -r line; do echo "::error title=integration service state::${line}"; done
+          docker compose -p gbuzz-integration -f docker-compose.integration.yml logs --no-color --tail 15 2>&1 \
+            | grep -iE 'error|exception|traceback|fail|denied|not found' | tail -20 \
+            | while read -r line; do echo "::error title=integration log::${line}"; done
       - name: Tear down integration state
         if: always()
         run: docker compose -p gbuzz-integration -f docker-compose.integration.yml down --volumes --remove-orphans
@@ -271,3 +289,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
+        env:
+          # Required by gitleaks-action to scan pull requests.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

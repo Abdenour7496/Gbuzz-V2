@@ -152,7 +152,8 @@ services:
     networks: [data-net]
 
   ollama:
-    image: ollama/ollama:latest
+    # Pinned to the digest recorded in docker-compose.production.lock.yml; override OLLAMA_IMAGE to upgrade deliberately.
+    image: ${OLLAMA_IMAGE:-ollama/ollama@sha256:d5034f60974be528e0a5523ba5e89156e4a9ffd12d0b2b18475fb148237f3d4c}
     restart: unless-stopped
     volumes:
       - ollama-data:/root/.ollama
@@ -170,7 +171,8 @@ services:
     networks: [buzz-net]
 
   ollama-init:
-    image: ollama/ollama:latest
+    # Pinned to the digest recorded in docker-compose.production.lock.yml; override OLLAMA_IMAGE to upgrade deliberately.
+    image: ${OLLAMA_IMAGE:-ollama/ollama@sha256:d5034f60974be528e0a5523ba5e89156e4a9ffd12d0b2b18475fb148237f3d4c}
     restart: "no"
     depends_on:
       ollama:
@@ -197,7 +199,7 @@ services:
       PGUSER: ${POSTGRES_USER:-buzz}
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       PGDATABASE: ${POSTGRES_DB:-buzz}
-      EMBEDDING_DIMS: ${EMBEDDING_DIMS:-1536}
+      EMBEDDING_DIMS: ${EMBEDDING_DIMS:-768}
       GCOR_DB_USER: ${GCOR_DB_USER:-}
       GCOR_DB_PASSWORD: ${GCOR_DB_PASSWORD:-}
     volumes:
@@ -228,8 +230,9 @@ services:
       MINIO_ROOT_PASSWORD: ${GCOR_S3_SECRET_KEY:-${BUZZ_S3_SECRET_KEY:?set BUZZ_S3_SECRET_KEY}}
       MINIO_BUCKET: ${GCOR_S3_BUCKET:-buzz-gcor}
       GCOR_CHANNEL_BUCKET_PREFIX: ${GCOR_CHANNEL_BUCKET_PREFIX:-}
-      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-openai}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      # Self-contained by default: local Ollama embeddings. Selecting openai sends content off-host.
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-ollama}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
       GENERATION_MODEL: ${GENERATION_MODEL:-qwen2.5:1.5b}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
@@ -242,6 +245,13 @@ services:
       MAX_INGEST_FILE_BYTES: ${MAX_INGEST_FILE_BYTES:-26214400}
       MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-27262976}
       MAX_API_IN_FLIGHT: ${MAX_API_IN_FLIGHT:-4}
+      MAX_API_QUEUED: ${MAX_API_QUEUED:-32}
+      API_QUEUE_SECONDS: ${API_QUEUE_SECONDS:-10}
+      GCOR_STATEMENT_TIMEOUT_MS: ${GCOR_STATEMENT_TIMEOUT_MS:-30000}
+      RETRIEVAL_VECTOR_WEIGHT: ${RETRIEVAL_VECTOR_WEIGHT:-0.5}
+      RETRIEVAL_MIN_VECTOR_SCORE: ${RETRIEVAL_MIN_VECTOR_SCORE:-0.45}
+      INGESTION_JOB_MAX_ATTEMPTS: ${INGESTION_JOB_MAX_ATTEMPTS:-12}
+      INGESTION_JOB_LEASE_SECONDS: ${INGESTION_JOB_LEASE_SECONDS:-60}
       REQUEST_BODY_TIMEOUT_SECONDS: ${REQUEST_BODY_TIMEOUT_SECONDS:-60}
       MAX_QUERY_CHARS: ${MAX_QUERY_CHARS:-10000}
       MAX_ATTACHMENT_TOTAL_BYTES: ${MAX_ATTACHMENT_TOTAL_BYTES:-104857600}
@@ -383,7 +393,8 @@ services:
 
   graphiti-model-init:
     profiles: [graph]
-    image: ollama/ollama:latest
+    # Pinned to the digest recorded in docker-compose.production.lock.yml; override OLLAMA_IMAGE to upgrade deliberately.
+    image: ${OLLAMA_IMAGE:-ollama/ollama@sha256:d5034f60974be528e0a5523ba5e89156e4a9ffd12d0b2b18475fb148237f3d4c}
     restart: "no"
     depends_on:
       ollama:

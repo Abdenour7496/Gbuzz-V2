@@ -3,6 +3,7 @@ import hashlib
 import ipaddress
 import io
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -39,6 +40,8 @@ from parser_client import extract as parse_isolated_document
 from graph_retrieval import candidates as graph_candidates
 from audit_pack import router as audit_pack_router
 
+logger = logging.getLogger("gcor.proxy")
+
 POSTGRES_DSN = os.getenv("POSTGRES_DSN")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
 POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
@@ -66,6 +69,16 @@ CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "180"))
 MAX_INGEST_FILE_BYTES = int(os.getenv("MAX_INGEST_FILE_BYTES", str(25 * 1024 * 1024)))
 MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(MAX_INGEST_FILE_BYTES + 1024 * 1024)))
 MAX_API_IN_FLIGHT = int(os.getenv("MAX_API_IN_FLIGHT", "4"))
+MAX_API_QUEUED = int(os.getenv("MAX_API_QUEUED", "32"))
+STATEMENT_TIMEOUT_MS = int(os.getenv("GCOR_STATEMENT_TIMEOUT_MS", "30000"))
+# Hybrid retrieval: default leg weights for reciprocal-rank fusion, and the abstention floor.
+# When no candidate shares a single keyword with the question, evidence is accepted only if its
+# vector similarity reaches RETRIEVAL_MIN_VECTOR_SCORE; otherwise retrieval returns nothing and
+# /api/ask abstains instead of citing unrelated text. Calibrate both with
+# scripts/evaluate-knowledge.py against the deployed embedding model.
+RETRIEVAL_VECTOR_WEIGHT = float(os.getenv("RETRIEVAL_VECTOR_WEIGHT", "0.5"))
+RETRIEVAL_MIN_VECTOR_SCORE = float(os.getenv("RETRIEVAL_MIN_VECTOR_SCORE", "0.45"))
+API_QUEUE_SECONDS = float(os.getenv("API_QUEUE_SECONDS", "10"))
 REQUEST_BODY_TIMEOUT_SECONDS = float(os.getenv("REQUEST_BODY_TIMEOUT_SECONDS", "60"))
 MAX_QUERY_CHARS = int(os.getenv("MAX_QUERY_CHARS", "10000"))
 MAX_ATTACHMENT_TOTAL_BYTES = int(os.getenv("MAX_ATTACHMENT_TOTAL_BYTES", str(100 * 1024 * 1024)))
@@ -123,6 +136,7 @@ HTTP_REQUEST_DURATION = Histogram("gcor_http_request_duration_seconds", "GCOR HT
 GOVERNANCE_PENDING = Gauge("gcor_governance_pending_events", "Governance events awaiting object storage publication")
 GOVERNANCE_RETRYING = Gauge("gcor_governance_retrying_events", "Unpublished governance events with failed publication attempts")
 GOVERNANCE_OLDEST = Gauge("gcor_governance_oldest_pending_seconds", "Age of oldest unpublished governance event")
+MODEL_AVAILABLE = Gauge("gcor_model_available", "Local model availability by role (1 = usable)", ["role"])
 INGESTION_JOBS = Gauge('gcor_ingestion_jobs','Durable ingestion jobs by status',['status'])
 INGESTION_AGE = Gauge('gcor_ingestion_oldest_pending_seconds','Oldest unfinished ingestion job')
 SYNTHESIS_PENDING = Gauge('gcor_synthesis_pending_jobs','Unfinished synthesis jobs')
@@ -168,8 +182,8 @@ class RetrieveRequest(BaseModel):
     access_level: str = "public"
     min_confidence: float = Field(default=0, ge=0, le=1)
     agent_id: str | None = None
-    vector_weight: float = Field(default=0.75, ge=0, le=1)
-    lexical_weight: float = Field(default=0.25, ge=0, le=1)
+    vector_weight: float = Field(default=RETRIEVAL_VECTOR_WEIGHT, ge=0, le=1)
+    lexical_weight: float = Field(default=1 - RETRIEVAL_VECTOR_WEIGHT, ge=0, le=1)
 
 
 class AskRequest(BaseModel):
@@ -179,8 +193,8 @@ class AskRequest(BaseModel):
     access_level: str = "public"
     min_confidence: float = Field(default=0, ge=0, le=1)
     agent_id: str | None = None
-    vector_weight: float = Field(default=0.75, ge=0, le=1)
-    lexical_weight: float = Field(default=0.25, ge=0, le=1)
+    vector_weight: float = Field(default=RETRIEVAL_VECTOR_WEIGHT, ge=0, le=1)
+    lexical_weight: float = Field(default=1 - RETRIEVAL_VECTOR_WEIGHT, ge=0, le=1)
     max_citations: int = Field(default=4, ge=1, le=10)
     channel_id: str | None = None
     channel_name: str | None = None
@@ -442,6 +456,21 @@ def parse_metadata_json(raw: str | None) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise HTTPException(422, "metadata_json must be a JSON object")
     return parsed
+
+
+# Lifecycle and authority fields are written only by the governance paths (workspace review,
+# /api/knowledge/approve|transition, chat approval), each of which commits an audit event in the
+# same transaction. Ingest callers -- including service workloads such as the event projector --
+# must never be able to create already-approved, owner-assigned or superseding knowledge.
+GOVERNANCE_METADATA_KEYS = frozenset({
+    "superseded_by_document_id", "supersedes_document_id", "derivatives_invalidated",
+    "evidence_invalidated", "evidence_invalidated_at", "approved_by", "approved_at",
+})
+
+
+def strip_governance_metadata(metadata: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    removed = sorted(key for key in metadata if key.startswith("knowledge_") or key in GOVERNANCE_METADATA_KEYS)
+    return {key: value for key, value in metadata.items() if key not in removed}, removed
 
 
 def normalize_json_dict(value: Any) -> dict[str, Any]:
@@ -1105,6 +1134,9 @@ async def create_session_knowledge(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pool_options = {"min_size": 1, "max_size": 10}
+    if STATEMENT_TIMEOUT_MS > 0:
+        # A runaway query must not keep burning database CPU after its caller has gone.
+        pool_options["server_settings"] = {"statement_timeout": str(STATEMENT_TIMEOUT_MS)}
     if POSTGRES_DSN:
         pool_options["dsn"] = POSTGRES_DSN
     else:
@@ -1158,6 +1190,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="gcor-proxy", version="0.1.0", lifespan=lifespan)
 app.include_router(workspace_router)
+
+
+@app.exception_handler(asyncpg.PostgresConnectionError)
+@app.exception_handler(asyncpg.InterfaceError)
+@app.exception_handler(asyncpg.CannotConnectNowError)
+@app.exception_handler(ConnectionError)
+async def database_unavailable(request: Request, error: Exception):
+    """A lost database connection is a temporary outage, not a server bug: answer 503 + Retry-After."""
+    logger.warning("Database unavailable during %s: %s", request.url.path, type(error).__name__)
+    return JSONResponse({"detail": "Knowledge store temporarily unavailable; retry"}, 503, headers={"Retry-After": "2"})
 app.include_router(audit_pack_router)
 
 @app.get('/workspace',include_in_schema=False)
@@ -1182,6 +1224,7 @@ app.add_middleware(ScopedAccess, mode=os.getenv("GCOR_ACCESS_MODE", "legacy"),
 app.add_middleware(
     RequestLimits, max_body_bytes=MAX_REQUEST_BODY_BYTES,
     max_in_flight=MAX_API_IN_FLIGHT, body_timeout=REQUEST_BODY_TIMEOUT_SECONDS,
+    max_queued=MAX_API_QUEUED, queue_timeout=API_QUEUE_SECONDS,
 )
 
 
@@ -1594,6 +1637,9 @@ async def ingest_payload(
     }
 
 
+# Evidence validity: documents without Buzz evidence or wiki dependencies are always current
+# (same rule as the first branch of gcor.knowledge_evidence_current); checking that inline skips
+# one PL/pgSQL call per candidate document, roughly a third of retrieval time at 100k chunks.
 async def run_retrieval_query(
     request: Request,
     *,
@@ -1638,7 +1684,11 @@ async def run_retrieval_query(
         matches = await connection.fetch(
             """
             WITH search_terms AS (
-                SELECT websearch_to_tsquery('english', $7) AS query
+                -- Natural-language questions rarely contain every term of the answer, so the
+                -- keyword leg matches ANY query term (OR) and lets ts_rank_cd reward documents that
+                -- match more of them; titles are weighted 'A' above body text ('D').
+                SELECT websearch_to_tsquery('english', $7) AS query,
+                       NULLIF(replace(websearch_to_tsquery('english', $7)::text, ' & ', ' | '), '')::tsquery AS any_query
             ), semantic_candidates AS (
                 SELECT c.id, c.node_id, c.document_id, c.ordinal, c.content, c.embedding, d.title, d.source_uri, d.created_at, d.metadata, d.content_sha256, c.search_vector
                 FROM gcor.chunks c
@@ -1647,10 +1697,10 @@ async def run_retrieval_query(
                 WHERE d.access_level = $2 AND $1::vector IS NOT NULL
                   AND ($3::text IS NULL OR d.agent_id IS NULL OR d.agent_id = $3)
                   AND ($3::text IS NULL OR n.agent_id IS NULL OR n.agent_id = $3)
-                                    AND ($10::text IS NULL OR d.metadata->>'channel_id' = $10)
+                                    AND ($10::text IS NULL OR d.channel_id = $10)
                                     AND ($11::text IS NULL OR d.metadata->>'channel_name' = $11)
                                     AND ($12::bool IS FALSE OR COALESCE(d.metadata->>'knowledge_state', $14::text) = 'approved')
-                                    AND ($12::bool IS FALSE OR gcor.knowledge_evidence_current(d.id))
+                                    AND ($12::bool IS FALSE OR ((NOT (d.metadata ? 'buzz_evidence_ids') AND NOT (d.metadata ? 'wiki_dependencies')) OR gcor.knowledge_evidence_current(d.id)))
                   AND ($16::text IS NULL OR NOT(d.metadata ? 'knowledge_readers') OR d.metadata->'knowledge_readers'='null'::jsonb OR d.metadata->'knowledge_readers' @> jsonb_build_array($16::text))
                   AND n.confidence >= $4
                   AND n.valid_from <= $5 AND (n.valid_to IS NULL OR n.valid_to >= $5)
@@ -1665,22 +1715,22 @@ async def run_retrieval_query(
                 WHERE d.access_level = $2
                   AND ($3::text IS NULL OR d.agent_id IS NULL OR d.agent_id = $3)
                   AND ($3::text IS NULL OR n.agent_id IS NULL OR n.agent_id = $3)
-                                    AND ($10::text IS NULL OR d.metadata->>'channel_id' = $10)
+                                    AND ($10::text IS NULL OR d.channel_id = $10)
                                     AND ($11::text IS NULL OR d.metadata->>'channel_name' = $11)
                                     AND ($12::bool IS FALSE OR COALESCE(d.metadata->>'knowledge_state', $14::text) = 'approved')
-                                    AND ($12::bool IS FALSE OR gcor.knowledge_evidence_current(d.id))
+                                    AND ($12::bool IS FALSE OR ((NOT (d.metadata ? 'buzz_evidence_ids') AND NOT (d.metadata ? 'wiki_dependencies')) OR gcor.knowledge_evidence_current(d.id)))
                   AND ($16::text IS NULL OR NOT(d.metadata ? 'knowledge_readers') OR d.metadata->'knowledge_readers'='null'::jsonb OR d.metadata->'knowledge_readers' @> jsonb_build_array($16::text))
                   AND n.confidence >= $4
                   AND n.valid_from <= $5 AND (n.valid_to IS NULL OR n.valid_to >= $5)
-                  AND c.search_vector @@ search_terms.query
-                ORDER BY ts_rank_cd(c.search_vector, search_terms.query, 32) DESC
+                  AND (setweight(to_tsvector('english', COALESCE(d.title, '')), 'A') || c.search_vector) @@ search_terms.any_query
+                ORDER BY ts_rank_cd(setweight(to_tsvector('english', COALESCE(d.title, '')), 'A') || c.search_vector, search_terms.any_query, 32) DESC
                 LIMIT ($6 * 4)
             ), graph_candidates AS (
                 SELECT c.id,c.node_id,c.document_id,c.ordinal,c.content,c.embedding,d.title,d.source_uri,d.created_at,d.metadata,d.content_sha256,c.search_vector
                 FROM gcor.chunks c JOIN gcor.documents d ON d.id=c.document_id JOIN gcor.nodes n ON n.id=c.node_id
                 WHERE d.id=ANY($15::uuid[]) AND d.access_level=$2 AND n.access_level=$2
-                  AND d.metadata->>'channel_id'=$10 AND d.metadata->>'knowledge_state'='approved'
-                  AND gcor.knowledge_evidence_current(d.id)
+                  AND d.channel_id=$10 AND d.metadata->>'knowledge_state'='approved'
+                  AND ((NOT (d.metadata ? 'buzz_evidence_ids') AND NOT (d.metadata ? 'wiki_dependencies')) OR gcor.knowledge_evidence_current(d.id))
                   AND ($3::text IS NULL OR (d.agent_id=$3 AND n.agent_id=$3))
                   AND ($11::text IS NULL OR d.metadata->>'channel_name'=$11)
                   AND ($16::text IS NULL OR NOT(d.metadata ? 'knowledge_readers') OR d.metadata->'knowledge_readers'='null'::jsonb OR d.metadata->'knowledge_readers' @> jsonb_build_array($16::text))
@@ -1692,90 +1742,94 @@ async def run_retrieval_query(
                 SELECT * FROM lexical_candidates
                 UNION
                 SELECT * FROM graph_candidates
+            ), scored AS (
+                SELECT c.*,
+                       CASE WHEN $1::vector IS NULL THEN NULL ELSE 1 - (c.embedding <=> $1::vector) END AS vector_score,
+                       COALESCE(ts_rank_cd(setweight(to_tsvector('english', COALESCE(c.title, '')), 'A') || c.search_vector,
+                                           search_terms.any_query, 32), 0.0) AS lexical_score,
+                       COALESCE(NULLIF(c.metadata->>'knowledge_approved_at', '')::timestamptz, c.created_at) AS governance_time
+                FROM candidates c CROSS JOIN search_terms
+            ), fused AS (
+                -- Reciprocal-rank fusion: each leg contributes weight/(k + rank). Ranks, unlike raw
+                -- cosine and ts_rank_cd values, are on one scale, so keyword evidence is not drowned
+                -- out by vector similarity. Multiplied by (k + 1) so a top-ranked chunk in both legs
+                -- scores ~1.0.
+                SELECT s.*,
+                       11.0 * (CASE WHEN s.vector_score IS NULL THEN 0.0
+                                    ELSE $8 / (10.0 + rank() OVER (ORDER BY s.vector_score DESC NULLS LAST)) END
+                             + CASE WHEN s.lexical_score > 0
+                                    THEN $9 / (10.0 + rank() OVER (ORDER BY s.lexical_score DESC)) ELSE 0.0 END) AS score
+                FROM scored s
             )
-                             SELECT c.id, c.node_id, c.document_id, c.ordinal, c.content, c.title, c.source_uri, c.created_at, c.metadata,
-                   c.content_sha256, encode(digest(c.content,'sha256'),'hex') AS chunk_sha256,
-                   COALESCE(1 - (c.embedding <=> $1::vector), 0.0) AS vector_score,
-                   ts_rank_cd(c.search_vector, search_terms.query, 32) AS lexical_score,
-                                     ($8 * (COALESCE(1 - (c.embedding <=> $1::vector), 0.0)) +
-                                        $9 * ts_rank_cd(c.search_vector, search_terms.query, 32)) AS score,
-                                     CASE
-                                         WHEN $13::bool IS FALSE THEN 0.0
-                                         ELSE
-                                             (
-                                                 CASE WHEN COALESCE(c.metadata->>'knowledge_state', 'approved') = 'approved' THEN 0.12 ELSE 0.0 END
-                                                 + CASE
-                                                         WHEN COALESCE(NULLIF(c.metadata->>'knowledge_approved_at', '')::timestamptz, c.created_at) >= ($5 - interval '7 days') THEN 0.05
-                                                         WHEN COALESCE(NULLIF(c.metadata->>'knowledge_approved_at', '')::timestamptz, c.created_at) >= ($5 - interval '30 days') THEN 0.02
-                                                         ELSE 0.0
-                                                     END
-                                             )
-                                     END AS governance_boost,
-                                     (($8 * (COALESCE(1 - (c.embedding <=> $1::vector), 0.0)) +
-                                        $9 * ts_rank_cd(c.search_vector, search_terms.query, 32)) +
-                                        CASE
-                                         WHEN $13::bool IS FALSE THEN 0.0
-                                         ELSE
-                                             (
-                                                 CASE WHEN COALESCE(c.metadata->>'knowledge_state', 'approved') = 'approved' THEN 0.12 ELSE 0.0 END
-                                                 + CASE
-                                                         WHEN COALESCE(NULLIF(c.metadata->>'knowledge_approved_at', '')::timestamptz, c.created_at) >= ($5 - interval '7 days') THEN 0.05
-                                                         WHEN COALESCE(NULLIF(c.metadata->>'knowledge_approved_at', '')::timestamptz, c.created_at) >= ($5 - interval '30 days') THEN 0.02
-                                                         ELSE 0.0
-                                                     END
-                                             )
-                                     END
-                                     + CASE
-                                             WHEN $13::bool IS FALSE THEN 0.0
-                                             ELSE EXTRACT(EPOCH FROM COALESCE(NULLIF(c.metadata->>'knowledge_approved_at', '')::timestamptz, c.created_at)) * 1e-12
-                                         END
-                                     ) AS ranked_score
-                                             ,COALESCE(NULLIF(c.metadata->>'knowledge_approved_at', '')::timestamptz, c.created_at) AS governance_time
-            FROM candidates c
-            CROSS JOIN search_terms
-                                         ORDER BY ranked_score DESC, governance_time DESC, c.ordinal
+            SELECT f.id, f.node_id, f.document_id, f.ordinal, f.content, f.title, f.source_uri, f.created_at, f.metadata,
+                   f.content_sha256, encode(digest(f.content,'sha256'),'hex') AS chunk_sha256,
+                   COALESCE(f.vector_score, 0.0) AS vector_score, f.lexical_score, f.score,
+                   CASE WHEN $13::bool IS FALSE THEN 0.0 ELSE
+                        CASE WHEN COALESCE(f.metadata->>'knowledge_state', 'approved') = 'approved' THEN 0.012 ELSE 0.0 END
+                        + CASE WHEN f.governance_time >= ($5 - interval '7 days') THEN 0.005
+                               WHEN f.governance_time >= ($5 - interval '30 days') THEN 0.002 ELSE 0.0 END
+                   END AS governance_boost,
+                   f.score
+                   + CASE WHEN $13::bool IS FALSE THEN 0.0 ELSE
+                        CASE WHEN COALESCE(f.metadata->>'knowledge_state', 'approved') = 'approved' THEN 0.012 ELSE 0.0 END
+                        + CASE WHEN f.governance_time >= ($5 - interval '7 days') THEN 0.005
+                               WHEN f.governance_time >= ($5 - interval '30 days') THEN 0.002 ELSE 0.0 END
+                        + EXTRACT(EPOCH FROM f.governance_time) * 1e-12
+                     END AS ranked_score,
+                   f.governance_time
+            FROM fused f
+            ORDER BY ranked_score DESC, f.governance_time DESC, f.ordinal
             LIMIT $6
             """,
             query_vector, access_level, agent_id, min_confidence, now, top_k,
                         query, vector_weight, lexical_weight, channel_id, channel_name, approved_only, prefer_recent_approved,
                         "proposed" if principal else "approved", graph_documents, principal.subject if principal else None,
         )
+        if matches and not any(row["lexical_score"] > 0 for row in matches) and max(row["vector_score"] for row in matches) < RETRIEVAL_MIN_VECTOR_SCORE:
+            matches = []  # no keyword overlap and only weak semantic similarity: abstain
         seed_ids = [row["node_id"] for row in matches]
         graph_nodes = []
         if seed_ids and hops:
             graph_nodes = await connection.fetch(
                 """
-                WITH RECURSIVE permitted AS (
-                    SELECT n.* FROM gcor.nodes n
-                    JOIN gcor.documents d ON d.id=n.document_id
+                -- Walk outward from the seeds and authorise each visited node as it is reached
+                -- (same predicates as before, applied per step). Never materialise every node of
+                -- the channel: under row-level security that cost grew quadratically with volume.
+                WITH RECURSIVE walk(node_id, depth, path) AS (
+                    SELECT n.id, 0, ARRAY[n.id]
+                    FROM unnest($1::uuid[]) AS seed(seed_id)
+                    JOIN gcor.nodes n ON n.id = seed.seed_id
+                    JOIN gcor.documents d ON d.id = n.document_id
                     WHERE n.access_level=$3 AND d.access_level=$3
                       AND ($11::text IS NULL OR NOT(d.metadata ? 'knowledge_readers') OR d.metadata->'knowledge_readers'='null'::jsonb OR d.metadata->'knowledge_readers' @> jsonb_build_array($11::text))
-                  AND n.confidence >= $4
+                      AND n.confidence >= $4
                       AND n.valid_from <= $5 AND (n.valid_to IS NULL OR n.valid_to >= $5)
                       AND ($6::text IS NULL OR (n.agent_id=$6 AND d.agent_id=$6))
-                      AND ($7::text IS NULL OR d.metadata->>'channel_id'=$7)
+                      AND ($7::text IS NULL OR d.channel_id=$7)
                       AND ($8::text IS NULL OR d.metadata->>'channel_name'=$8)
                       AND ($9::bool IS FALSE OR COALESCE(d.metadata->>'knowledge_state',$10::text)='approved')
-                      AND ($9::bool IS FALSE OR gcor.knowledge_evidence_current(d.id))
-                ), walk(node_id, depth, path) AS (
-                    SELECT seed_id, 0, ARRAY[seed_id]
-                    FROM unnest($1::uuid[]) AS seed_id
-                    JOIN permitted p ON p.id=seed_id
+                      AND ($9::bool IS FALSE OR ((NOT (d.metadata ? 'buzz_evidence_ids') AND NOT (d.metadata ? 'wiki_dependencies')) OR gcor.knowledge_evidence_current(d.id)))
                     UNION ALL
-                    SELECT CASE WHEN e.source_id = w.node_id THEN e.target_id ELSE e.source_id END,
-                           w.depth + 1,
-                           w.path || CASE WHEN e.source_id = w.node_id THEN e.target_id ELSE e.source_id END
-                    FROM walk w JOIN gcor.edges e ON e.source_id = w.node_id OR e.target_id = w.node_id
-                    JOIN permitted p ON p.id=CASE WHEN e.source_id=w.node_id THEN e.target_id ELSE e.source_id END
+                    SELECT nxt.id, w.depth + 1, w.path || nxt.id
+                    FROM walk w
+                    JOIN gcor.edges e ON e.source_id = w.node_id OR e.target_id = w.node_id
+                    JOIN gcor.nodes nxt ON nxt.id = CASE WHEN e.source_id = w.node_id THEN e.target_id ELSE e.source_id END
+                    JOIN gcor.documents d ON d.id = nxt.document_id
                     WHERE w.depth < $2
-                      AND NOT (CASE WHEN e.source_id = w.node_id THEN e.target_id ELSE e.source_id END = ANY(w.path))
+                      AND NOT (nxt.id = ANY(w.path))
+                      AND nxt.access_level=$3 AND d.access_level=$3
+                      AND ($11::text IS NULL OR NOT(d.metadata ? 'knowledge_readers') OR d.metadata->'knowledge_readers'='null'::jsonb OR d.metadata->'knowledge_readers' @> jsonb_build_array($11::text))
+                      AND nxt.confidence >= $4
+                      AND nxt.valid_from <= $5 AND (nxt.valid_to IS NULL OR nxt.valid_to >= $5)
+                      AND ($6::text IS NULL OR (nxt.agent_id=$6 AND d.agent_id=$6))
+                      AND ($7::text IS NULL OR d.channel_id=$7)
+                      AND ($8::text IS NULL OR d.metadata->>'channel_name'=$8)
+                      AND ($9::bool IS FALSE OR COALESCE(d.metadata->>'knowledge_state',$10::text)='approved')
+                      AND ($9::bool IS FALSE OR ((NOT (d.metadata ? 'buzz_evidence_ids') AND NOT (d.metadata ? 'wiki_dependencies')) OR gcor.knowledge_evidence_current(d.id)))
                 )
-                SELECT DISTINCT n.id, n.node_type, n.label, n.content, n.confidence, min(w.depth) AS depth
-                FROM walk w JOIN permitted n ON n.id = w.node_id
-                WHERE n.access_level = $3
-                  AND n.confidence >= $4
-                  AND n.valid_from <= $5 AND (n.valid_to IS NULL OR n.valid_to >= $5)
-                  AND ($6::text IS NULL OR n.agent_id IS NULL OR n.agent_id = $6)
+                SELECT n.id, n.node_type, n.label, n.content, n.confidence, min(w.depth) AS depth
+                FROM walk w JOIN gcor.nodes n ON n.id = w.node_id
+                WHERE ($6::text IS NULL OR n.agent_id IS NULL OR n.agent_id = $6)
                 GROUP BY n.id, n.node_type, n.label, n.content, n.confidence
                 ORDER BY depth, n.confidence DESC
                 """,
@@ -1796,7 +1850,7 @@ def authoritative_citation(item: dict[str, Any]) -> dict[str, Any]:
 
 def format_answer_from_chunks(query: str, matches: list[dict[str, Any]]) -> str:
     if not matches:
-        return f"No matching knowledge found for: {query}"
+        return "No authorized evidence was found."  # exact abstention recognised by scripts/evaluate-knowledge.py
     lines = [f"Best available knowledge for: {query}", ""]
     for index, item in enumerate(matches[:3]):
         excerpt = re.sub(r"\s+", " ", item["content"]).strip()
@@ -1838,9 +1892,9 @@ async def verify_release_authorization(request: Request, citations: list[dict[st
         ids = list({UUID(item["document_id"]) for item in citations})
         count = await request.app.state.pool.fetchval(
             """SELECT count(*) FROM gcor.documents d WHERE d.id=ANY($1::uuid[])
-               AND d.metadata->>'channel_id'=$2 AND d.access_level=$3
+               AND d.channel_id=$2 AND d.access_level=$3
                AND d.metadata->>'knowledge_state'='approved'
-               AND gcor.knowledge_evidence_current(d.id)""",
+               AND ((NOT (d.metadata ? 'buzz_evidence_ids') AND NOT (d.metadata ? 'wiki_dependencies')) OR gcor.knowledge_evidence_current(d.id))""",
             ids, principal.channel_id, principal.access_level, timeout=5)
         if count != len(ids):
             raise HTTPException(409, "Citation evidence changed before response release")
@@ -1986,7 +2040,9 @@ async def ingest_document(
     if provided_inputs > 1:
         raise HTTPException(422, "Provide only one of file, text, file_url, or session_json")
     INGESTS.inc()
-    metadata = parse_metadata_json(metadata_json)
+    metadata, stripped_governance_keys = strip_governance_metadata(parse_metadata_json(metadata_json))
+    if stripped_governance_keys:
+        logger.warning("Ignored governance metadata on ingest: %s", ",".join(stripped_governance_keys))
     attachments = parse_attachments_json(attachments_json)
     session_record: dict[str, Any] | None = None
     session_attachments: list[dict[str, Any]] = []
@@ -3095,8 +3151,37 @@ async def check_readiness_dependencies(state) -> dict[str, str]:
         await asyncio.to_thread(state.readiness_s3.head_bucket, Bucket=MINIO_BUCKET)
 
     results = await asyncio.gather(database(), storage(), return_exceptions=True)
+    state.model_status = await check_models()
     return {name: "unavailable" if isinstance(result, BaseException) else "ok"
             for name, result in zip(("postgres", "object_storage"), results)}
+
+
+def _model_present(name: str, installed: set[str]) -> bool:
+    return name in installed or (":" not in name and f"{name}:latest" in installed)
+
+
+async def check_models() -> dict[str, str]:
+    """Report local model availability. Informational: retrieval keeps working (keyword fallback,
+    cited excerpts) without models, so this never flips readiness, but it is exported for alerts."""
+    status = {"embedding": "external" if EMBEDDING_BACKEND != "ollama" else "unknown",
+              "generation": "disabled" if not GENERATION_MODEL else "unknown"}
+    if EMBEDDING_BACKEND == "ollama" or GENERATION_MODEL:
+        try:
+            async with httpx.AsyncClient(timeout=2, trust_env=False) as client:
+                response = await client.get(f"{OLLAMA_HOST.rstrip('/')}/api/tags")
+                response.raise_for_status()
+                installed = {m.get("name", "") for m in response.json().get("models", []) if isinstance(m, dict)}
+            if EMBEDDING_BACKEND == "ollama":
+                status["embedding"] = "ok" if _model_present(EMBEDDING_MODEL, installed) else "missing"
+            if GENERATION_MODEL:
+                status["generation"] = "ok" if _model_present(GENERATION_MODEL, installed) else "missing"
+        except Exception:
+            for key in status:
+                if status[key] == "unknown":
+                    status[key] = "unavailable"
+    for role, value in status.items():
+        MODEL_AVAILABLE.labels(role).set(1 if value in {"ok", "external", "disabled"} else 0)
+    return status
 
 
 @app.get("/health/ready")
@@ -3113,7 +3198,8 @@ async def readiness(request: Request):
         return JSONResponse({"status": "not_ready", "detail": "Dependency probe timed out"}, 503)
     dependencies = {**dependencies, "governance_schema": "ok" if getattr(state, "governance_available", True) else "migration_required"}
     ready = all(value == "ok" for value in dependencies.values())
-    return JSONResponse({"status": "ready" if ready else "not_ready", "dependencies": dependencies},
+    return JSONResponse({"status": "ready" if ready else "not_ready", "dependencies": dependencies,
+                         "models": getattr(state, "model_status", {})},
                         200 if ready else 503)
 
 

@@ -1,5 +1,6 @@
 """Buzz-scoped stewardship and durable ingestion. No relay mutations."""
 import asyncio
+import os
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -67,7 +68,7 @@ class JobAction(Channel):
 
 
 async def document(pool, doc_id, p):
-    row=await pool.fetchrow("SELECT id,title,source_uri,metadata,updated_at FROM gcor.documents WHERE id=$1 AND metadata->>'channel_id'=$2 AND access_level=$3",doc_id,p.channel_id,p.access_level)
+    row=await pool.fetchrow("SELECT id,title,source_uri,metadata,updated_at FROM gcor.documents WHERE id=$1 AND channel_id=$2 AND access_level=$3",doc_id,p.channel_id,p.access_level)
     if row is None: raise HTTPException(404,'Knowledge document not found')
     readers=json_object(row['metadata']).get('knowledge_readers')
     if readers is not None and (not isinstance(readers,list) or p.subject not in readers):
@@ -95,7 +96,7 @@ async def documents(payload: Channel,request: Request):
     rows=await request.app.state.pool.fetch('''SELECT id,title,source_uri,updated_at,
         metadata->>'knowledge_state' AS state,metadata->>'knowledge_owner' AS owner,
         metadata->>'knowledge_review_due' AS review_due
-        FROM gcor.documents WHERE metadata->>'channel_id'=$1 AND access_level=$2
+        FROM gcor.documents WHERE channel_id=$1 AND access_level=$2
         AND ($3 OR (metadata->>'knowledge_state'='approved' AND gcor.knowledge_evidence_current(id)))
         AND (NOT(metadata ? 'knowledge_readers') OR metadata->'knowledge_readers'='null'::jsonb OR metadata->'knowledge_readers' @> jsonb_build_array($4::text))
         ORDER BY updated_at DESC LIMIT 200''',p.channel_id,p.access_level,p.role in {'owner','admin','member'},p.subject)
@@ -193,15 +194,39 @@ async def job_action(payload: JobAction,request: Request):
     return dict(row)
 
 
+# Transient dependency outages (object store, embedding model, database restarts) must not turn
+# submissions into permanently failed jobs: retry with exponential backoff, capped, for up to
+# JOB_MAX_ATTEMPTS attempts (defaults cover roughly two hours of outage). A short lease that the
+# worker renews while it runs lets another worker reclaim a crashed job within about a minute.
+JOB_MAX_ATTEMPTS=int(os.getenv('INGESTION_JOB_MAX_ATTEMPTS','12'))
+JOB_BACKOFF_BASE_SECONDS=float(os.getenv('INGESTION_JOB_BACKOFF_SECONDS','15'))
+JOB_BACKOFF_MAX_SECONDS=float(os.getenv('INGESTION_JOB_BACKOFF_MAX_SECONDS','900'))
+JOB_LEASE_SECONDS=int(os.getenv('INGESTION_JOB_LEASE_SECONDS','60'))
+
+
+def retry_delay(attempts):
+    return min(JOB_BACKOFF_BASE_SECONDS*(2**max(attempts-1,0)),JOB_BACKOFF_MAX_SECONDS)
+
+
+async def renew_lease(pool,job_id,lease):
+    while True:
+        await asyncio.sleep(max(JOB_LEASE_SECONDS/3,1))
+        try:
+            await pool.execute("UPDATE gcor.ingestion_jobs SET lease_until=now()+make_interval(secs=>$3) WHERE id=$1 AND lease_id=$2 AND status='processing'",job_id,lease,JOB_LEASE_SECONDS)
+        except Exception:
+            pass  # the next renewal retries; losing the lease only means another worker may resume the job
+
+
 async def process_one(app):
     pool=app.state.pool;lease=uuid4()
     row=await pool.fetchrow('''WITH candidate AS (
-        SELECT id FROM gcor.ingestion_jobs WHERE attempts<3 AND
+        SELECT id FROM gcor.ingestion_jobs WHERE attempts<$2 AND
         ((status='pending' AND next_attempt_at<=now()) OR (status='processing' AND lease_until<now()))
         ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
         UPDATE gcor.ingestion_jobs j SET status='processing',attempts=attempts+1,lease_id=$1,
-        lease_until=now()+interval '6 minutes',updated_at=now() FROM candidate c WHERE j.id=c.id RETURNING j.*''',lease)
+        lease_until=now()+make_interval(secs=>$3),updated_at=now() FROM candidate c WHERE j.id=c.id RETURNING j.*''',lease,JOB_MAX_ATTEMPTS,JOB_LEASE_SECONDS)
     if row is None: return False
+    renewal=asyncio.create_task(renew_lease(pool,row['id'],lease))
     try:
         data=json_object(row['payload'])
         allowed=await pool.fetchval('''SELECT 1 FROM public.channel_members m JOIN public.users u ON u.pubkey=m.pubkey AND u.community_id=m.community_id
@@ -217,11 +242,14 @@ async def process_one(app):
                 channel_name=None,channel_id=row['channel_id'],event_id=str(row['id']),event_kind='knowledge.propose',event_timestamp=None,
                 author_pubkey=row['actor'],file_url=None,file_name='proposal.txt',metadata={'knowledge_state':'proposed','knowledge_owner':row['actor'],'ingestion_job_id':str(row['id'])},preserve_existing=True)
         if result.get('quarantined'): raise RuntimeError('Ingestion was quarantined')
-        await pool.execute("UPDATE gcor.ingestion_jobs SET status='completed',result=$3::jsonb,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_id=$2",row['id'],lease,json.dumps(result,default=str))
+        await pool.execute("UPDATE gcor.ingestion_jobs SET status='completed',result=$3::jsonb,error=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_id=$2",row['id'],lease,json.dumps(result,default=str))
     except Exception as error:
         permanent=isinstance(error,PermissionError) or (isinstance(error,HTTPException) and error.status_code<500)
-        state='failed' if permanent or row['attempts']>=3 else 'pending'
-        await pool.execute("UPDATE gcor.ingestion_jobs SET status=$3,error=$4,next_attempt_at=now()+interval '30 seconds',lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_id=$2",row['id'],lease,state,type(error).__name__)
+        state='failed' if permanent or row['attempts']>=JOB_MAX_ATTEMPTS else 'pending'
+        await pool.execute("UPDATE gcor.ingestion_jobs SET status=$3,error=$4,next_attempt_at=now()+make_interval(secs=>$5),lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_id=$2",row['id'],lease,state,type(error).__name__,retry_delay(row['attempts']))
+    finally:
+        renewal.cancel()
+        await asyncio.gather(renewal,return_exceptions=True)
     return True
 
 
@@ -229,7 +257,7 @@ async def worker(app):
     while True:
         try:
             await app.state.pool.execute("INSERT INTO gcor.worker_heartbeats(worker) VALUES('ingestion') ON CONFLICT(worker) DO UPDATE SET seen_at=now()")
-            await app.state.pool.execute("UPDATE gcor.ingestion_jobs SET status='failed',error='Worker lease expired after retry limit',updated_at=now() WHERE status='processing' AND lease_until<now() AND attempts>=3")
+            await app.state.pool.execute("UPDATE gcor.ingestion_jobs SET status='failed',error='Worker lease expired after retry limit',updated_at=now() WHERE status='processing' AND lease_until<now() AND attempts>=$1",JOB_MAX_ATTEMPTS)
             if await process_one(app): continue
         except Exception:
             pass

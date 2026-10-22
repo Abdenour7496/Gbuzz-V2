@@ -78,6 +78,57 @@ class RequestLimitsTest(unittest.IsolatedAsyncioTestCase):
             await task
         self.assertEqual(0, middleware.active)
 
+    async def test_bounded_queue_serves_burst_in_order_then_rejects_overflow(self):
+        release, order = asyncio.Event(), []
+        async def downstream(scope, receive, send):
+            order.append(scope["n"])
+            if scope["n"] == 0:
+                await release.wait()
+        middleware = RequestLimits(downstream, 4, 1, 1, max_queued=2, queue_timeout=1)
+        receive = AsyncMock(return_value={"type": "http.request", "body": b"", "more_body": False})
+        sends = [AsyncMock() for _ in range(4)]
+        tasks = [asyncio.create_task(middleware({"type": "http", "path": "/api/ask", "n": i}, receive, sends[i])) for i in range(4)]
+        await asyncio.sleep(0.05)
+        self.assertEqual(429, sends[3].call_args_list[0].args[0]["status"])  # queue of 2 is full
+        release.set()
+        await asyncio.gather(*tasks)
+        self.assertEqual([0, 1, 2], order)
+        self.assertEqual(0, middleware.active)
+        self.assertEqual(0, len(middleware.waiters))
+
+    async def test_queue_wait_times_out_with_429_and_releases_nothing(self):
+        release = asyncio.Event()
+        async def downstream(scope, receive, send):
+            await release.wait()
+        middleware = RequestLimits(downstream, 4, 1, 1, max_queued=4, queue_timeout=0.05)
+        receive = AsyncMock(return_value={"type": "http.request", "body": b"", "more_body": False})
+        first = asyncio.create_task(middleware({"type": "http", "path": "/api/ask"}, receive, AsyncMock()))
+        await asyncio.sleep(0.01)
+        send = AsyncMock()
+        await middleware({"type": "http", "path": "/api/ask"}, receive, send)
+        self.assertEqual(429, send.call_args_list[0].args[0]["status"])
+        self.assertEqual(1, middleware.active)
+        release.set()
+        await first
+        self.assertEqual(0, middleware.active)
+
+    async def test_cancelled_waiter_does_not_leak_capacity(self):
+        release = asyncio.Event()
+        async def downstream(scope, receive, send):
+            await release.wait()
+        middleware = RequestLimits(downstream, 4, 1, 1, max_queued=4, queue_timeout=5)
+        receive = AsyncMock(return_value={"type": "http.request", "body": b"", "more_body": False})
+        first = asyncio.create_task(middleware({"type": "http", "path": "/api/ask"}, receive, AsyncMock()))
+        await asyncio.sleep(0.01)
+        queued = asyncio.create_task(middleware({"type": "http", "path": "/api/ask"}, receive, AsyncMock()))
+        await asyncio.sleep(0.01)
+        queued.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await queued
+        release.set()
+        await first
+        self.assertEqual(0, middleware.active)
+
     async def test_handler_failure_releases_capacity(self):
         app = AsyncMock(side_effect=RuntimeError("failure"))
         middleware = RequestLimits(app, 4, 1, 1)
