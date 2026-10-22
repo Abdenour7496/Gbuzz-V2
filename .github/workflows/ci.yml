@@ -184,7 +184,14 @@ jobs:
           npm test
       - name: Build and run the isolated integration stack
         run: |
-          docker compose -p gbuzz-integration -f docker-compose.integration.yml up -d --build --wait --wait-timeout 120 gcor-proxy
+          if ! docker compose -p gbuzz-integration -f docker-compose.integration.yml build > integration-build.log 2>&1; then
+            tail -40 integration-build.log | while read -r line; do echo "::error title=integration build::${line}"; done
+            exit 1
+          fi
+          if ! docker compose -p gbuzz-integration -f docker-compose.integration.yml up -d --wait --wait-timeout 120 gcor-proxy > integration-up.log 2>&1; then
+            tail -40 integration-up.log | while read -r line; do echo "::error title=integration up::${line}"; done
+            exit 1
+          fi
           docker compose -p gbuzz-integration -f docker-compose.integration.yml run --rm --no-deps smoke
       - name: Verify governance transaction failures and durable publication
         run: |
