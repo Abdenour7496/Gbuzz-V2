@@ -151,10 +151,12 @@ jobs:
       - name: LAN security negative tests
         shell: powershell
         run: |
-          ./tests/test_lan_security.ps1
-          ./tests/test_release_evidence_behavior.ps1
-          ./tests/test_lan_firewall_behavior.ps1
-          ./tests/test_lan_acl_behavior.ps1
+          $failed = @()
+          foreach ($test in './tests/test_lan_security.ps1','./tests/test_release_evidence_behavior.ps1','./tests/test_lan_firewall_behavior.ps1','./tests/test_lan_acl_behavior.ps1') {
+            try { & $test; if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "exit code $LASTEXITCODE" } }
+            catch { $failed += $test; Write-Host "::error title=$test::$($_.Exception.Message) at $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" }
+          }
+          if ($failed.Count) { throw "Failed: $($failed -join ', ')" }
 
   integration:
     name: Integration lifecycle
