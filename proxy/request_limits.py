@@ -1,27 +1,65 @@
 """Bound API admission and bodies before parsing or performing side effects."""
 import asyncio
+import collections
 
 from starlette.responses import JSONResponse
 
 
 class RequestLimits:
-    def __init__(self, app, max_body_bytes: int, max_in_flight: int, body_timeout: float):
+    def __init__(self, app, max_body_bytes: int, max_in_flight: int, body_timeout: float,
+                 max_queued: int = 0, queue_timeout: float = 0.0):
         if min(max_body_bytes, max_in_flight, body_timeout) <= 0:
             raise ValueError("Request limits must be positive")
+        if max_queued < 0 or queue_timeout < 0:
+            raise ValueError("Queue limits must not be negative")
         self.app = app
         self.max_body_bytes = max_body_bytes
         self.max_in_flight = max_in_flight
         self.body_timeout = body_timeout
+        # Bounded FIFO wait instead of an immediate 429: short bursts above max_in_flight are
+        # served in order; only a full queue or a wait longer than queue_timeout is rejected.
+        self.max_queued = max_queued
+        self.queue_timeout = queue_timeout
+        self.waiters: collections.deque[asyncio.Future] = collections.deque()
         self.active = 0
+
+    async def _admit(self) -> bool:
+        if self.active < self.max_in_flight and not self.waiters:
+            self.active += 1
+            return True
+        if len(self.waiters) >= self.max_queued or self.queue_timeout <= 0:
+            return False
+        waiter = asyncio.get_running_loop().create_future()
+        self.waiters.append(waiter)
+        try:
+            await asyncio.wait_for(waiter, self.queue_timeout)
+            return True  # the releasing request handed its slot over (active unchanged)
+        except TimeoutError:
+            return False
+        except asyncio.CancelledError:
+            if waiter.done() and not waiter.cancelled():
+                self._release()  # slot was handed over as the client went away: pass it on
+            raise
+        finally:
+            try:
+                self.waiters.remove(waiter)
+            except ValueError:
+                pass
+
+    def _release(self) -> None:
+        while self.waiters:
+            waiter = self.waiters.popleft()
+            if not waiter.done():
+                waiter.set_result(True)  # hand the slot straight to the next queued request
+                return
+        self.active -= 1
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or not scope["path"].startswith("/api/"):
             return await self.app(scope, receive, send)
-        if self.active >= self.max_in_flight:
+        if not await self._admit():
             return await JSONResponse({"detail": "API capacity reached; retry later"}, 429,
                                       headers={"Retry-After": "2"})(scope, receive, send)
-        # No await between checking and reserving: admission is atomic per event loop.
-        self.active += 1
         try:
             lengths = [v for k, v in scope.get("headers", []) if k.lower() == b"content-length"]
             if lengths:
@@ -62,4 +100,4 @@ class RequestLimits:
 
             await self.app(scope, replay, send)
         finally:
-            self.active -= 1
+            self._release()

@@ -88,7 +88,17 @@ class AccessTest(unittest.IsolatedAsyncioTestCase):
         endpoint.assert_not_awaited()
 
     async def test_unavailable_buzz_fails_closed(self):
-        app = ScopedAccess(AsyncMock(), mode='buzz', nostr=SimpleNamespace(authenticate=AsyncMock(side_effect=TimeoutError)))
+        # Unreachable identity store: denied (fail closed) but reported as retryable 503, not as a bad proof.
+        downstream = AsyncMock()
+        for unavailable in (TimeoutError, ConnectionRefusedError):
+            app = ScopedAccess(downstream, mode='buzz', nostr=SimpleNamespace(authenticate=AsyncMock(side_effect=unavailable)))
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+                response = await client.post('/api/ask', headers={'Authorization':'Nostr token'})
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.headers.get('retry-after'), '2')
+        downstream.assert_not_called()
+        # A malformed or invalid proof is still an authentication failure.
+        app = ScopedAccess(downstream, mode='buzz', nostr=SimpleNamespace(authenticate=AsyncMock(side_effect=ValueError('bad signature'))))
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
             self.assertEqual((await client.post('/api/ask', headers={'Authorization':'Nostr token'})).status_code, 401)
 

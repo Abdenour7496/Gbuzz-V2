@@ -15,7 +15,7 @@
     "build": "esbuild src/main.mjs --bundle --platform=node --format=esm --target=node20 --outfile=dist/gcor-agent.mjs --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\""
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@noble/curves": "1.9.7",
     "@noble/hashes": "1.8.0",
     "@scure/base": "1.2.6",

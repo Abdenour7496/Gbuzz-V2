@@ -49,8 +49,9 @@ result = request("/api/retrieve", {"query": token, "top_k": 5, "hops": 0, "acces
 assert result.get("chunks"), result
 assert any(token in chunk.get("content", "") for chunk in result["chunks"]), result
 
+# A deduplicated re-ingest reuses the original immutable record rather than writing a second one.
 records = request("/api/recovery/records")
-assert isinstance(records, list) and len(records) >= 2, records
+assert isinstance(records, list) and any(record["id"] == first["record_id"] for record in records), records
 
 approval = {"target_document_id": first["document_id"], "approved_by": "integration-reviewer"}
 key = {"Idempotency-Key": token}

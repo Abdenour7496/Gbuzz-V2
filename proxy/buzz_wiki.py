@@ -49,7 +49,7 @@ def similarity(left, right):
 async def catalog(pool, p):
     # Every returned item is safe to broadcast to the whole current channel.
     return await pool.fetch('''SELECT id,title,metadata,updated_at FROM gcor.documents
-        WHERE metadata->>'channel_id'=$1 AND access_level=$2
+        WHERE channel_id=$1 AND access_level=$2
         AND (metadata->'knowledge_readers' IS NULL OR metadata->'knowledge_readers'='null'::jsonb)
         AND metadata->>'knowledge_state' IN ('proposed','approved')
         ORDER BY updated_at DESC LIMIT 200''',p.channel_id,p.access_level)

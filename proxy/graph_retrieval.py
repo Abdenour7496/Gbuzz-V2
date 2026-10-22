@@ -26,7 +26,7 @@ async def candidates(pool,query,channel_id,access_level,agent_id,subject=None):
                 FROM gcor.graphiti_projection gp JOIN gcor.knowledge_entries e ON e.id=gp.entry_id
                 JOIN gcor.documents d ON d.id=e.source_document_id
                 WHERE gp.reconciled_at IS NOT NULL AND gp.operation='add'
-                  AND d.metadata->>'channel_id'=$1 AND d.access_level=$2
+                  AND d.channel_id=$1 AND d.access_level=$2
                   AND d.metadata->>'knowledge_state'='approved' AND gcor.knowledge_evidence_current(d.id)
                   AND ($3::text IS NULL OR d.agent_id IS NULL OR d.agent_id=$3)
                   AND ($4::text IS NULL OR NOT(d.metadata ? 'knowledge_readers') OR d.metadata->'knowledge_readers'='null'::jsonb OR d.metadata->'knowledge_readers' @> jsonb_build_array($4::text))
