@@ -21,7 +21,7 @@ deployed lab stack was not changed.
 | Database outage reported as HTTP 401 | Identity check failures caused by an unreachable database return 503 + `Retry-After`; lost database connections inside handlers also return 503. Invalid proofs still return 401. | `proxy/access_policy.py`, `proxy/main.py` |
 | Model health invisible | `/health/ready` reports `models.embedding` / `models.generation`; gauge `gcor_model_available{role}`. Readiness itself is unchanged (retrieval degrades to keywords without models). | `proxy/main.py` |
 | Not self-contained by default | Base Compose defaults to local Ollama `nomic-embed-text` (768-d) instead of OpenAI; Ollama image pinned to the digest in `docker-compose.production.lock.yml` (override with `OLLAMA_IMAGE`); `.env.example` no longer carries an OpenAI placeholder key. | `docker-compose.yml`, `docker-compose.offline-verification.yml`, `.env.example` |
-| CI red since 11 Sep | Compose validation placeholder for `AUDIT_PACK_SIGNING_KEY`; `smoke.py` expectation fixed (a deduplicated re-ingest reuses the original record); Python locks refreshed for certifi, mcp 1.30.0, PyJWT, pypdf 6.21.2, urllib3 2.8.0; `@modelcontextprotocol/sdk` 1.32.1 with a rebuilt agent bundle. | `.github/workflows/ci.yml`, `tests/integration/smoke.py`, `*/requirements.lock`, `agent-tools/gcor-agent/*` |
+| CI red since 11 Sep | Compose validation placeholder for `AUDIT_PACK_SIGNING_KEY`; `smoke.py` expectation fixed (a deduplicated re-ingest reuses the original record); Python locks refreshed for certifi, mcp 1.30.0, PyJWT, pypdf 6.21.2, urllib3 2.8.0; `@modelcontextprotocol/sdk` 1.32.1 with a rebuilt agent bundle; gitleaks given the token it needs for PRs; the integration stack's MinIO (no longer pullable from quay.io) replaced in CI by a moto S3 server built from PyPI; build/start and LAN-test failures now surface as annotations. | `.github/workflows/ci.yml`, `tests/integration/smoke.py`, `tests/integration/s3-mock.Dockerfile`, `docker-compose.integration.yml`, `*/requirements.lock`, `agent-tools/gcor-agent/*` |
 
 ## Before and after (replica)
 
@@ -55,6 +55,11 @@ combinations in CI render; Node agent and desktop-card tests pass; `pip-audit` a
 no known vulnerabilities in the locked dependencies. The relay lifecycle test needs the relay image
 and was not run.
 
+CI on this branch: every job passes, including the full integration lifecycle and the real Buzz
+relay knowledge loop, except `tests/test_lan_acl_behavior.ps1` on the Windows runner (ACL rollback
+SDDL comparison in `scripts/protect-gbuzz-secrets.ps1`). That test covers LAN-exposure hardening,
+which this deployment does not use, and needs a Windows host to debug.
+
 ## Migration 0016
 
 Additive and backward-compatible: older GCOR images ignore the new column and indexes, so an image
@@ -83,4 +88,8 @@ recreate the same three services.
   `qwen2.5` generation latency, faithfulness, abstention and prompt-injection behaviour.
 - Prove offline operation: build and run on the lab with outbound network blocked.
 - Free disk on C: (8.4% free observed; the capacity gate requires 20%).
+- **MinIO image availability.** `quay.io/minio/minio@sha256:14cea…` now returns `unauthorized`, and
+  Docker Hub images were withdrawn earlier. The lab runs from its locally cached copy, so a rebuilt
+  host could not obtain its object store. Export every runtime image to the backup set
+  (`docker save`) or choose an S3-compatible store with a maintained public image.
 - Off-host backups and human alert delivery remain recommended, but are outside this release's scope.
