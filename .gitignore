@@ -14,3 +14,6 @@ backups/
 release-evidence-*.md
 !docs/release-evidence-*.md
 observability/alertmanager.production.yml
+
+# Local model files (fetched by scripts/fetch-reranker-model.*)
+/models/

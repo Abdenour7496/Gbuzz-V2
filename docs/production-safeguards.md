@@ -78,6 +78,12 @@ Configure these in `.env`; Compose passes them to the proxy. Defaults:
 | `GCOR_STATEMENT_TIMEOUT_MS` | 30000 | PostgreSQL `statement_timeout` for every GCOR connection, so an abandoned or runaway query cannot keep consuming database CPU. `0` disables. |
 | `RETRIEVAL_VECTOR_WEIGHT` | 0.5 | Default weight of the vector leg in reciprocal-rank fusion (keyword leg = 1 − this). Requests may still pass `vector_weight`/`lexical_weight`. |
 | `RETRIEVAL_MIN_VECTOR_SCORE` | 0.45 | Abstention floor: if no candidate shares a keyword with the question and the best cosine similarity is below this, retrieval returns nothing and `/api/ask` answers `No authorized evidence was found.` |
+| `RETRIEVAL_MAX_CHUNKS_PER_DOCUMENT` | 0 | At most this many chunks of one document per result set; 0 disables the limit. |
+| `HNSW_ITERATIVE_SCAN` | auto | pgvector ≥ 0.8 iterative index scans, so the HNSW index keeps searching until enough rows pass the channel/access/RLS filters. `auto` enables `relaxed_order` only when the installed pgvector supports it (checked at startup); `off` never sets it. |
+| `HNSW_EF_SEARCH` | 0 | HNSW candidate list size; 0 keeps the pgvector default (40). |
+| `RERANKER_URL` | empty | Local cross-encoder rerank endpoint (llama.cpp `/v1/rerank`, Jina/Cohere or TEI format). Empty disables reranking. Fail-open: errors, timeouts or malformed replies keep the fused order, and the reranker is then skipped for `RERANK_COOLDOWN_SECONDS` (30). |
+| `RERANK_CANDIDATES` | 12 | Fused candidates sent to the reranker (bounded by 4 × `top_k`). |
+| `RERANK_TIMEOUT_SECONDS` | 3 | Per-request reranker timeout. |
 | `INGESTION_JOB_MAX_ATTEMPTS` | 12 | Attempts before a workspace ingestion job is parked as failed. Retries back off exponentially from `INGESTION_JOB_BACKOFF_SECONDS` (15) to `INGESTION_JOB_BACKOFF_MAX_SECONDS` (900), covering roughly 1.5 hours of dependency outage. |
 | `INGESTION_JOB_LEASE_SECONDS` | 60 | Job lease, renewed by the worker every third of the lease while it runs; a crashed worker's job is resumed after about a minute. |
 | `REQUEST_BODY_TIMEOUT_SECONDS` | 60 | Time allowed to receive an API body; 408 before work starts. Does not cancel a running database mutation. |
