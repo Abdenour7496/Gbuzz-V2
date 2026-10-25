@@ -51,6 +51,14 @@ channel is large enough for the planner to choose the HNSW index.
   and attachment_lifecycle all pass.
 - All 12 Compose combinations render, including the new `reranker` profile, which CI now validates.
 
+- CI on PR #33: 23 of 24 jobs pass, including the Docker integration lifecycle, the real Buzz relay
+  knowledge loop, Trivy and all Compose validations. The exception is
+  `tests/test_lan_acl_behavior.ps1` on the Windows runner, which also fails on the base branch
+  (LAN hardening, not used on the lab).
+- In the same PR, `agent-tools/gcor-agent` dependencies were patched for advisories published after
+  23 Oct: zod 4.6.7 (GHSA-mrhx-c7xc-m3w5), fast-uri 3.1.9 and ip-address 10.7.5. The agent tools
+  must be re-installed when deployed.
+
 ## Lab rollout (when approved)
 
 1. Check pgvector on the lab: `SELECT extversion FROM pg_extension WHERE extname='vector';`.
