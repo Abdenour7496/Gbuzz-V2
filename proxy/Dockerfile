@@ -15,6 +15,7 @@ COPY proxy/enterprise_workflows.py .
 COPY proxy/document_parsing.py .
 COPY proxy/parser_client.py .
 COPY proxy/graph_retrieval.py .
+COPY proxy/reranker.py .
 COPY proxy/audit_pack.py .
 COPY proxy/buzz_chat.py .
 COPY proxy/buzz_synthesis.py .
@@ -29,6 +30,7 @@ COPY scripts/review-enterprise-evaluation.py ./scripts/review-enterprise-evaluat
 COPY scripts/evaluate-service-identity-matrix.py ./scripts/evaluate-service-identity-matrix.py
 COPY config/enterprise-assurance-slos.v1.json ./config/enterprise-assurance-slos.v1.json
 COPY scripts/check-knowledge-quality.py ./scripts/check-knowledge-quality.py
+COPY scripts/judge-answers.py ./scripts/judge-answers.py
 COPY schemas ./schemas
 COPY tests ./tests
 
