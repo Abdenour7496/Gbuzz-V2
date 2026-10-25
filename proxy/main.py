@@ -38,6 +38,7 @@ from enterprise_workflows import router as workspace_router, worker as ingestion
 from document_parsing import extract as parse_document
 from parser_client import extract as parse_isolated_document
 from graph_retrieval import candidates as graph_candidates
+import reranker
 from audit_pack import router as audit_pack_router
 
 logger = logging.getLogger("gcor.proxy")
@@ -78,6 +79,14 @@ STATEMENT_TIMEOUT_MS = int(os.getenv("GCOR_STATEMENT_TIMEOUT_MS", "30000"))
 # scripts/evaluate-knowledge.py against the deployed embedding model.
 RETRIEVAL_VECTOR_WEIGHT = float(os.getenv("RETRIEVAL_VECTOR_WEIGHT", "0.5"))
 RETRIEVAL_MIN_VECTOR_SCORE = float(os.getenv("RETRIEVAL_MIN_VECTOR_SCORE", "0.45"))
+# At most this many chunks of one document in a result set (0 = no limit), so one long document
+# cannot take every citation slot.
+RETRIEVAL_MAX_CHUNKS_PER_DOCUMENT = int(os.getenv("RETRIEVAL_MAX_CHUNKS_PER_DOCUMENT", "0"))
+# pgvector >= 0.8 iterative index scans: keep scanning the HNSW graph until enough rows pass the
+# channel/access/row-level-security filters instead of returning a starved result. "auto" enables
+# relaxed_order only when the installed pgvector supports it; "off" never sets it.
+HNSW_ITERATIVE_SCAN = os.getenv("HNSW_ITERATIVE_SCAN", "auto").strip().lower()
+HNSW_EF_SEARCH = int(os.getenv("HNSW_EF_SEARCH", "0"))
 API_QUEUE_SECONDS = float(os.getenv("API_QUEUE_SECONDS", "10"))
 REQUEST_BODY_TIMEOUT_SECONDS = float(os.getenv("REQUEST_BODY_TIMEOUT_SECONDS", "60"))
 MAX_QUERY_CHARS = int(os.getenv("MAX_QUERY_CHARS", "10000"))
@@ -1131,6 +1140,43 @@ async def create_session_knowledge(
     return session_id, created
 
 
+def parse_version(text: str | None) -> tuple[int, ...]:
+    parts = []
+    for piece in (text or "").split("."):
+        digits = re.match(r"\d+", piece)
+        if not digits:
+            break
+        parts.append(int(digits.group()))
+    return tuple(parts)
+
+
+async def hnsw_server_settings(pool_options: dict[str, Any]) -> dict[str, str]:
+    """Session settings for pgvector's HNSW scans, applied only when the installed extension
+    understands them (an unknown hnsw.* parameter would make every connection fail)."""
+    if HNSW_ITERATIVE_SCAN == "off" and HNSW_EF_SEARCH <= 0:
+        return {}
+    connect = {k: v for k, v in pool_options.items() if k not in {"min_size", "max_size"}}
+    try:
+        connection = await asyncpg.connect(**connect)
+        try:
+            version = parse_version(await connection.fetchval("SELECT extversion FROM pg_extension WHERE extname='vector'"))
+        finally:
+            await connection.close()
+    except Exception:
+        logger.warning("could not read the pgvector version; HNSW scan settings left at defaults")
+        return {}
+    settings: dict[str, str] = {}
+    if HNSW_EF_SEARCH > 0 and version:
+        settings["hnsw.ef_search"] = str(HNSW_EF_SEARCH)
+    mode = "relaxed_order" if HNSW_ITERATIVE_SCAN == "auto" else HNSW_ITERATIVE_SCAN
+    if mode in {"relaxed_order", "strict_order"}:
+        if version >= (0, 8):
+            settings["hnsw.iterative_scan"] = mode
+        elif HNSW_ITERATIVE_SCAN != "auto":
+            logger.warning("HNSW_ITERATIVE_SCAN=%s needs pgvector >= 0.8 (installed %s); ignored", mode, ".".join(map(str, version)) or "none")
+    return settings
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pool_options = {"min_size": 1, "max_size": 10}
@@ -1147,6 +1193,9 @@ async def lifespan(app: FastAPI):
             "password": POSTGRES_PASSWORD,
             "database": POSTGRES_DB,
         })
+    vector_settings = await hnsw_server_settings(pool_options)
+    if vector_settings:
+        pool_options["server_settings"] = {**pool_options.get("server_settings", {}), **vector_settings}
     app.state.pool = ScopedPool(await asyncpg.create_pool(**pool_options))
     if os.getenv('GCOR_REQUIRE_RUNTIME_ROLE','false').lower() == 'true':
         role = await app.state.pool.fetchrow('SELECT rolsuper,rolbypassrls,rolcreaterole FROM pg_roles WHERE rolname=current_user')
@@ -1640,6 +1689,17 @@ async def ingest_payload(
 # Evidence validity: documents without Buzz evidence or wiki dependencies are always current
 # (same rule as the first branch of gcor.knowledge_evidence_current); checking that inline skips
 # one PL/pgSQL call per candidate document, roughly a third of retrieval time at 100k chunks.
+def result_pool_size(top_k: int) -> int:
+    """Rows fetched from the fused ranking before reranking / per-document capping trims to top_k.
+    With both features off this is exactly top_k, so the result is unchanged."""
+    pool = top_k
+    if reranker.enabled():
+        pool = max(pool, reranker.RERANK_CANDIDATES)
+    if RETRIEVAL_MAX_CHUNKS_PER_DOCUMENT > 0:
+        pool = max(pool, top_k * 3)
+    return min(pool, top_k * 4) if pool > top_k else pool
+
+
 async def run_retrieval_query(
     request: Request,
     *,
@@ -1754,11 +1814,15 @@ async def run_retrieval_query(
                 -- cosine and ts_rank_cd values, are on one scale, so keyword evidence is not drowned
                 -- out by vector similarity. Multiplied by (k + 1) so a top-ranked chunk in both legs
                 -- scores ~1.0.
+                -- Tied scores share their average position (fractional ranking): hundreds of
+                -- boilerplate chunks with an identical keyword score must not all inherit rank 2.
                 SELECT s.*,
                        11.0 * (CASE WHEN s.vector_score IS NULL THEN 0.0
-                                    ELSE $8 / (10.0 + rank() OVER (ORDER BY s.vector_score DESC NULLS LAST)) END
+                                    ELSE $8 / (10.0 + rank() OVER (ORDER BY s.vector_score DESC NULLS LAST)
+                                               + (count(*) OVER (PARTITION BY s.vector_score) - 1) / 2.0) END
                              + CASE WHEN s.lexical_score > 0
-                                    THEN $9 / (10.0 + rank() OVER (ORDER BY s.lexical_score DESC)) ELSE 0.0 END) AS score
+                                    THEN $9 / (10.0 + rank() OVER (ORDER BY s.lexical_score DESC)
+                                               + (count(*) OVER (PARTITION BY s.lexical_score) - 1) / 2.0) ELSE 0.0 END) AS score
                 FROM scored s
             )
             SELECT f.id, f.node_id, f.document_id, f.ordinal, f.content, f.title, f.source_uri, f.created_at, f.metadata,
@@ -1779,14 +1843,19 @@ async def run_retrieval_query(
                    f.governance_time
             FROM fused f
             ORDER BY ranked_score DESC, f.governance_time DESC, f.ordinal
-            LIMIT $6
+            LIMIT $17
             """,
             query_vector, access_level, agent_id, min_confidence, now, top_k,
                         query, vector_weight, lexical_weight, channel_id, channel_name, approved_only, prefer_recent_approved,
                         "proposed" if principal else "approved", graph_documents, principal.subject if principal else None,
+                        result_pool_size(top_k),
         )
-        if matches and not any(row["lexical_score"] > 0 for row in matches) and max(row["vector_score"] for row in matches) < RETRIEVAL_MIN_VECTOR_SCORE:
+        head = matches[:top_k]
+        if head and not any(row["lexical_score"] > 0 for row in head) and max(row["vector_score"] for row in head) < RETRIEVAL_MIN_VECTOR_SCORE:
             matches = []  # no keyword overlap and only weak semantic similarity: abstain
+        if len(matches) > 1 and reranker.enabled():
+            matches = reranker.reorder(matches, await reranker.scores(query, [reranker.document_text(row) for row in matches]))
+        matches = reranker.cap_per_document(matches, top_k, RETRIEVAL_MAX_CHUNKS_PER_DOCUMENT)
         seed_ids = [row["node_id"] for row in matches]
         graph_nodes = []
         if seed_ids and hops:

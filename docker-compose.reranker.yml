@@ -1,0 +1,48 @@
+# Optional local cross-encoder reranker (llama.cpp server, no network egress).
+#
+#   1. Put the model file on the host:  scripts/fetch-reranker-model.ps1  (or .sh)
+#      -> ./models/reranker/bge-reranker-v2-m3-Q8_0.gguf (SHA-256 checked)
+#   2. In .env:  RERANKER_URL=http://reranker:8080/v1/rerank
+#   3. docker compose <your usual -f files> -f docker-compose.reranker.yml --profile reranker up -d reranker
+#      then recreate gcor-proxy / gcor-enterprise / buzz-knowledge so they read RERANKER_URL.
+#
+# GCOR treats the reranker as fail-open: if it is down or slow (RERANK_TIMEOUT_SECONDS) retrieval
+# keeps its fused order. It only reorders rows the database query has already authorised.
+# Pin RERANKER_IMAGE by digest in docker-compose.production.lock.yml for production.
+services:
+  reranker:
+    profiles: [reranker]
+    image: ${RERANKER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    restart: unless-stopped
+    command:
+      - --model
+      - /models/${RERANKER_MODEL_FILE:-bge-reranker-v2-m3-Q8_0.gguf}
+      - --reranking
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --ctx-size
+      - "${RERANKER_CTX_SIZE:-8192}"
+      - --batch-size
+      - "2048"
+      - --ubatch-size
+      - "2048"
+      - --parallel
+      - "${RERANKER_PARALLEL:-2}"
+      - --threads
+      - "${RERANKER_THREADS:-4}"
+    volumes:
+      - ${RERANKER_MODEL_DIR:-./models/reranker}:/models:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=64m"]
+    mem_limit: ${RERANKER_MEM_LIMIT:-2g}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+    networks: [data-net]
